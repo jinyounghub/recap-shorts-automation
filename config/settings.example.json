@@ -1,0 +1,7 @@
+{
+  "image_engine": "codex",
+  "models": {},
+  "voice": {"engine": "qwen"},
+  "sfx": {"fill_missing": true},
+  "memes": {}
+}

@@ -1,6 +1,6 @@
 """문장마다 분위기 라벨(beat) 하나 붙이기.
 
-영상 한 편에 Gemini 텍스트 호출 1번. 실패·키 없음·응답이 이상하면 규칙으로 대신한다.
+영상 한 편에 Codex 텍스트 호출 1번. 로그인 없음·호출 실패·응답이 이상하면 규칙으로 대신한다.
 결과는 작업 폴더 fx/beats.json 에 저장(문장 내용이 같으면 다시 부르지 않는다).
 """
 from __future__ import annotations
@@ -64,9 +64,11 @@ def validate(raw, n: int) -> Optional[list[str]]:
 
 
 def label_beats(texts: list[str], *, cache_path: str | Path | None = None, use_llm: bool = True,
-                model: str = "gemini-3.8-flash", llm: Optional[Callable[[str], dict]] = None) -> dict:
+                model: str | None = None, llm: Optional[Callable[[str], dict]] = None) -> dict:
     """반환 {"beats": [...], "source": "llm|rules|cache", "digest":…, "error":…}. llm 은 시험용 대체 호출."""
     n = len(texts)
+    if model and model.lower().startswith("gemini"):
+        model = None  # old local configuration follows the current Codex model
     dg = _digest(texts)
     cp = Path(cache_path) if cache_path else None
     if cp and cp.is_file():
@@ -83,11 +85,11 @@ def label_beats(texts: list[str], *, cache_path: str | Path | None = None, use_l
         try:
             if llm is None:
                 if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("RECAP_FX_NO_LLM"):
-                    raise RuntimeError("시험 중이거나 RECAP_FX_NO_LLM 설정 — Gemini 를 부르지 않음")
-                from recap_shorts.llm.gemini_api import generate_text
+                    raise RuntimeError("시험 중이거나 RECAP_FX_NO_LLM 설정 — Codex 를 부르지 않음")
+                from recap_shorts.llm.codex import generate_text
 
                 def llm(prompt, _m=model):
-                    return generate_text(prompt, model=_m, json=True, temperature=0.2, timeout=60)
+                    return generate_text(prompt, model=_m, json=True, timeout=180)
             got = validate(llm(build_prompt(texts)), n)
             if got is None:
                 res["error"] = "응답 모양이 맞지 않음(길이 불일치 등)"

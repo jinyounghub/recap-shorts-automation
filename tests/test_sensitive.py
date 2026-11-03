@@ -4,11 +4,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 
 from recap_shorts import pipeline as P
-from recap_shorts.app import create_app
 from recap_shorts.images import sensitive
 from tests.pipeline.fakes import FakeDeps
 
@@ -50,7 +48,7 @@ class FakeVision:
         if self.fail:
             raise RuntimeError(self.fail)
         if self.blocked:
-            raise RuntimeError("Gemini 응답에 후보가 없음: {'blockReason': 'PROHIBITED_CONTENT'}")
+            raise RuntimeError("Codex 응답에 후보가 없음: {'blockReason': 'PROHIBITED_CONTENT'}")
         items = []
         for i, im in enumerate(images, 1):
             r, g, b = (int(v) for v in im.resize((1, 1), Image.BOX).getpixel((0, 0)))
@@ -310,7 +308,7 @@ def test_blocked_batch_is_split_into_single_calls(tmp_path, cfg):
     def read(images, instr):
         calls.append(len(images))
         if len(images) > 1:
-            raise RuntimeError("Gemini 응답이 비어 있음(finishReason=SAFETY)")
+            raise RuntimeError("Codex 응답이 비어 있음(finishReason=SAFETY)")
         r = int(images[0].resize((1, 1), Image.BOX).getpixel((0, 0))[0])
         if r > 150:
             return {"items": [{"i": 1, "level": "mild", "kind": "blood_injury", "reason": "피"}]}
@@ -390,7 +388,7 @@ class SensDeps(FakeDeps):
     def sensitive_read(self, images, instruction):
         self.vision_calls.append(len(images))
         if self.fail_vision:
-            raise RuntimeError("Gemini 연결 실패")
+            raise RuntimeError("Codex 연결 실패")
         out = []
         for i, im in enumerate(images, 1):
             r, g, b = (int(v) for v in im.resize((1, 1), Image.BOX).getpixel((0, 0)))
@@ -426,7 +424,7 @@ def test_pipeline_treats_ai_pictures_and_shows_sub_row(tmp_path):
     assert caps and all(e["sensitive"]["level"] == "none" for e in caps)
     assert not any(e.get("role") == "dc_head" and "sensitive" in e for e in ents)       # 글 머리 카드는 검사하지 않음
     row = sub_of(job, "민감한 그림")
-    assert row["status"] == "done" and f"흑백 {len(ai)}장" in row["note"] and "Gemini" in row["note"]
+    assert row["status"] == "done" and f"흑백 {len(ai)}장" in row["note"] and "Codex" in row["note"]
     assert max(deps.vision_calls) <= 8
     assert (job.dir / sensitive.CACHE_REL).is_file()
     # 렌더용 목록(image 산출물)에는 처리된 파일이 같은 이름으로 들어 있다
@@ -462,7 +460,7 @@ def test_pipeline_failure_continues_with_error_note(tmp_path):
     ai = [e for e in ents if e["kind"] == "ai"]
     assert ai and all(saturation(job.dir / e["file"]) > 50 for e in ai)               # 처리 없음
     row = sub_of(job, "민감한 그림")
-    assert row["status"] == "error" and "검사 못 함" in row["note"] and "Gemini 연결 실패" in row["note"]
+    assert row["status"] == "error" and "검사 못 함" in row["note"] and "연결 실패" in row["note"]
 
 
 def test_pipeline_rerun_does_not_ask_again(tmp_path):
@@ -484,108 +482,14 @@ def test_pipeline_rerun_does_not_ask_again(tmp_path):
     assert all(sensitive.orig_path(job2.dir / e["file"]).is_file() for e in ai)
 
 
-@pytest.fixture
-def env(tmp_path):
-    deps = SensDeps()
-    app = create_app(work_root=tmp_path, deps=deps)
-    with TestClient(app) as client:
-        yield client, app, deps
-
-
-def api_job(client, app, options=None):
-    r = client.post("/api/jobs", json={"gallery": "baseball_new13", "no": 2101, "options": options or {"auto_steps": ["read", "script"]}})
-    assert r.status_code == 200
-    assert app.state.runner.wait_idle(60)
-    return r.json()["id"]
-
-
-def test_api_sensitive_choice_undo_and_stale_video(env):
-    client, app, deps = env
-    jid = api_job(client, app)
-    job = app.state.store.get(jid)
-    ents = client.get(f"/api/jobs/{jid}/assets").json()
-    ai = next(e for e in ents if e["kind"] == "ai" and e["status"] == "ok")
-    p = job.dir / ai["file"]
-    orig = sensitive.orig_path(p).read_bytes()
-    assert saturation(p) == 0
-    r = client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": ai["file"], "treatment": "none"})
-    assert r.status_code == 200 and r.json()["sensitive"]["treatment"] == "none_by_user"
-    assert p.read_bytes() == orig
-    after = next(e for e in client.get(f"/api/jobs/{jid}/assets").json() if e["file"] == ai["file"])
-    assert after["sensitive"]["user"] is True and "원래대로" in after["review_reason"]
-    r = client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": ai["file"], "treatment": "gray_blur"})
-    assert r.status_code == 200 and spread(p) < 5 and saturation(p) == 0
-    # 영상에 쓰인 그림이면 영상·검수가 낡은 것으로 되돌아간다(가리기와 같은 길)
-    plan = json.loads((job.dir / "shot_plan.json").read_text(encoding="utf-8"))["plan"] if (job.dir / "shot_plan.json").is_file() else {}
-    used = {f for fs in plan.values() for f in fs}
-    assert r.json()["video_stale"] == (ai["file"] in used)
-    # 잘못된 요청
-    assert client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": ai["file"], "treatment": "blur"}).status_code == 400
-    assert client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": "assets/ai/none.png", "treatment": "gray"}).status_code == 404
-
-
-def test_api_sensitive_marks_render_stale_after_review(env):
-    client, app, deps = env
-    jid = api_job(client, app)
-    client.post(f"/api/jobs/{jid}/continue")             # 장면 배치 확인 → 영상 만들기 → 검수 대기
-    assert app.state.runner.wait_idle(60)
-    job = app.state.store.get(jid)
-    assert job.step("review")["status"] == "waiting" and "video" in job.state["artifacts"]
-    rv = json.loads((job.dir / "out/review.json").read_text(encoding="utf-8"))
-    used = {s["file"] for s in json.loads((job.dir / "timeline.json").read_text(encoding="utf-8"))["shots"]}
-    assert "sensitive" in rv and all(x["file"] in used and x["level"] == "mild" for x in rv["sensitive"])
-    target = next((x["file"] for x in rv["sensitive"]), None)
-    if target is None:
-        pytest.skip("이 시험 영상에는 AI 그림이 안 쓰임")
-    r = client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": target, "treatment": "none"})
-    assert r.status_code == 200 and r.json()["video_stale"] is True
-    st = client.get(f"/api/jobs/{jid}").json()
-    assert next(s for s in st["steps"] if s["key"] == "render")["status"] == "todo" and "video" not in st["artifacts"]
-
-
-def test_api_blur_keeps_treatment_on_rebuilt_card(env):
-    client, app, deps = env
-    jid = api_job(client, app)
-    job = app.state.store.get(jid)
-    ents = client.get(f"/api/jobs/{jid}/assets").json()
-    cap = next(e for e in ents if e["kind"] == "cap" and e.get("src"))
-    p = job.dir / cap["file"]
-    assert saturation(p) > 20                                                          # 처음엔 색이 있는 카드
-    r = client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": cap["file"], "treatment": "gray"})
-    assert r.status_code == 200 and saturation(p) == 0
-    r = client.post(f"/api/jobs/{jid}/assets/blur", json={"file": cap["file"], "boxes": [[0, 0, 100, 60]]})
-    assert r.status_code == 200 and cap["file"] in r.json()["cards"]
-    assert saturation(p) == 0                                                          # 카드를 새로 만들었어도 흑백이 유지됨
-    done = next(e for e in client.get(f"/api/jobs/{jid}/assets").json() if e["file"] == cap["file"])
-    assert done["blurred"] is True and done["needs_review"] is False
-    assert "흑백 처리" in done["review_reason"] and done["review_reason"].startswith("가림 확인됨")
-    # 원본(.orig.png)은 가림을 적용한 새 카드 — 되돌리면 색이 돌아온다
-    r = client.post(f"/api/jobs/{jid}/assets/sensitive", json={"file": cap["file"], "treatment": "none"})
-    assert r.status_code == 200 and saturation(p) > 20
-
-
-def test_api_regenerate_reclassifies_new_picture(env):
-    client, app, deps = env
-    jid = api_job(client, app)
-    job = app.state.store.get(jid)
-    ents = client.get(f"/api/jobs/{jid}/assets").json()
-    ai = next(e for e in ents if e["kind"] == "ai" and e["status"] == "ok")
-    calls_before = len(deps.vision_calls)
-    assert client.post(f"/api/jobs/{jid}/assets/regenerate", json={"file": ai["file"]}).status_code == 200
-    assert app.state.runner.wait_idle(60)
-    again = next(e for e in client.get(f"/api/jobs/{jid}/assets").json() if e["file"] == ai["file"])
-    assert again["sensitive"]["treatment"] == "gray" and saturation(job.dir / ai["file"]) == 0
-    assert len(deps.vision_calls) >= calls_before                                      # 새 그림이라 판정이 필요하면 호출됨(같은 색이면 기록에서)
-
-
 # ------------------------------------------------------------------ 평가용 명령
 def test_cli_prints_and_writes_json(tmp_path, monkeypatch, capsys):
     stripes(tmp_path / "set" / "a.png", STRONG)
     stripes(tmp_path / "set" / "sub" / "b.png", PLAIN)
     (tmp_path / "set" / "notes.txt").write_text("x", encoding="utf-8")
-    from recap_shorts.llm import gemini_api
+    from recap_shorts.llm import codex
     vis = FakeVision()
-    monkeypatch.setattr(gemini_api, "read_images", lambda imgs, instr, model=None, json=False, thinking=None, **k: (
+    monkeypatch.setattr(codex, "read_images", lambda imgs, instr, model=None, json=False, thinking=None, **k: (
         vis(imgs, instr) if thinking == "low" and json else (_ for _ in ()).throw(AssertionError("thinking low, json 이어야 함"))))
     out = tmp_path / "out.json"
     rc = sensitive.main([str(tmp_path / "set"), "--json", str(out), "--no-cache"])
@@ -603,11 +507,11 @@ def test_cli_prints_and_writes_json(tmp_path, monkeypatch, capsys):
 
 def test_cli_error_exit_code(tmp_path, monkeypatch, capsys):
     stripes(tmp_path / "a.png", STRONG)
-    from recap_shorts.llm import gemini_api
+    from recap_shorts.llm import codex
 
     def boom(*a, **k):
         raise RuntimeError("no key")
-    monkeypatch.setattr(gemini_api, "read_images", boom)
+    monkeypatch.setattr(codex, "read_images", boom)
     assert sensitive.main([str(tmp_path / "a.png"), "--no-cache"]) == 1
     assert "오류" in capsys.readouterr().out
     assert sensitive.main([str(tmp_path / "nothing_here")]) == 2

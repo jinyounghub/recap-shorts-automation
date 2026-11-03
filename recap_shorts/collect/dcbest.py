@@ -204,7 +204,7 @@ def triage_items(items: list[BestItem], triage_fn, cache_dir: Path | None, *, ba
             stopped = "unavailable"
             err = " ".join(str(r.get("error", "")) for r in (res or []))
             if "429" in err or "allocation" in err:
-                why = "Cloudflare 하루 무료 한도(429)를 다 써서"
+                why = "Codex 사용 한도(429)에 도달해서"
             break
         for r in res:
             no = r.get("no")

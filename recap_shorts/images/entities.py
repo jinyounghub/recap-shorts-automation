@@ -3,15 +3,15 @@
 대본에서 캐릭터 이야기가 나오면 그 캐릭터 사진을 찾아 넣는 식이다(말한 대상을 화면에도 보여 준다).
 
 흐름
-  1) extract  : Gemini 3.8 Flash 텍스트 1회 — 대본 문장 + 캡처가 이미 보여 주는 것 → 최대 3개 {sentence, name_ko, ...}
+  1) extract  : Codex 텍스트 1회 — 대본 문장 + 캡처가 이미 보여 주는 것 → 최대 3개 {sentence, name_ko, ...}
                 실존 인물(real_person)은 초상권·퍼블리시티 문제로 통째로 건너뛴다.
   2) 후보 찾기 : 위키백과 REST 요약(ko→en→ja, 없으면 검색 1회) → 위키미디어 공용 검색(photos.search_commons)
                 (네이버 이미지 검색은 쓰지 않음 — 결과의 저작권이 확인되지 않음)
                 구글·빙 이미지 긁기, 로그인 페이지는 쓰지 않는다. 요청은 HttpClient(정직한 UA·도메인당 3초)로.
-  3) 확인     : Gemini 3.8 Flash 비전 1회 — 이름 일치(yes)·또렷함·실사 얼굴 없음·글자 위주 아님. 대상 하나당 최대 2회.
+  3) 확인     : Codex 비전 1회 — 이름 일치(yes)·또렷함·실사 얼굴 없음·글자 위주 아님. 대상 하나당 최대 2회.
   4) 기록·카드 : post/ref_<k>.<ext>(원본 그대로) + assets/cap/r<k>.png(캡처 카드, label 없음) + 출처(page_url·image_url·site·licence·retrieved_at)
 
-Gemini 호출 합계 ≤ 1 + 2×대상(≤7). 키는 출력·저장하지 않는다. 시험 중(PYTEST_CURRENT_TEST)에는 실제 Gemini 를 부르지 않는다.
+Codex 호출 합계 ≤ 1 + 2×대상(≤7). 키는 출력·저장하지 않는다. 시험 중(PYTEST_CURRENT_TEST)에는 실제 Codex 를 부르지 않는다.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from urllib.parse import quote, urlencode
 
 from recap_shorts import errors
 
-MODEL = "gemini-3.8-flash"
+MODEL = None  # inherit the current Codex model
 MAX_ITEMS = 3
 MAX_VERIFY = 2                     # 대상 하나당 비전 확인 최대 횟수
 MIN_SIDE = 200                     # 이보다 작은 그림은 확인 없이 버림(영상에서 뭉개짐). 위키백과 만화 표지가 240px 안팎이라 낮춤
@@ -101,8 +101,8 @@ def _validate_items(raw, valid_index: set[int], shown: list[str]) -> list[dict]:
 
 def _default_text_fn(prompt: str):
     if "PYTEST_CURRENT_TEST" in os.environ:
-        raise RuntimeError("시험 중에는 Gemini 를 부르지 않는다")
-    from recap_shorts.llm.gemini_api import generate_text
+        raise RuntimeError("시험 중에는 Codex 를 부르지 않는다")
+    from recap_shorts.llm.codex import generate_text
     return generate_text(prompt, MODEL, json=True)
 
 
@@ -251,8 +251,8 @@ def _verify_prompt(ent: dict) -> str:
 
 def _default_vision_fn(image_bytes: bytes, instruction: str):
     if "PYTEST_CURRENT_TEST" in os.environ:
-        raise RuntimeError("시험 중에는 Gemini 를 부르지 않는다")
-    from recap_shorts.llm.gemini_api import read_images
+        raise RuntimeError("시험 중에는 Codex 를 부르지 않는다")
+    from recap_shorts.llm.codex import read_images
     return read_images([image_bytes], instruction, MODEL, json=True)
 
 
@@ -370,7 +370,7 @@ def shown_from_topic(topic: dict) -> list[str]:
 def find_entity_images(job_dir: Path | str, script: dict, timings: dict, topic: dict, client, *,
                        text_fn=None, vision_fn=None, sources_for=None, make_card=None) -> dict:
     """작업 폴더 안에서 전부 수행. 돌려주는 값:
-    {"entries": [assets.json 항목], "found": [이름], "missed": [이름], "extracted": [...], "calls": 사용한 Gemini 호출 수, "log": [...]}
+    {"entries": [assets.json 항목], "found": [이름], "missed": [이름], "extracted": [...], "calls": 사용한 Codex 호출 수, "log": [...]}
     같은 대본으로 다시 부르면(전부 찾았던 경우만) assets/entities.json 의 결과를 그대로 쓴다(호출 0회)."""
     job_dir = Path(job_dir)
     sentences = [{"index": s["index"], "text": s["text"]} for s in timings["sentences"]]

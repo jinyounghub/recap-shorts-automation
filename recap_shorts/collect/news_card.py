@@ -1,4 +1,4 @@
-"""API에서 받은 제목·언론사·날짜로 우리가 직접 그리는 뉴스 카드 PNG. 언론사 로고·기사 화면은 쓰지 않는다."""
+"""Draw a news card from a supplied title/outlet/date using bundled Korean fonts."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,8 +8,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 600
 BG, FG, MUTED = (24, 26, 32), (245, 245, 247), (150, 155, 168)
-_FONT_DIRS = [Path(r"C:\Windows\Fonts")]
-_REG, _BOLD = "malgun.ttf", "malgunbd.ttf"
+_FONT_DIRS = [Path(__file__).resolve().parents[2] / "assets" / "fonts"]
+_REG, _BOLD = "Pretendard-Regular.otf", "Pretendard-ExtraBold.otf"
 
 
 class FontNotFound(RuntimeError):
@@ -22,7 +22,7 @@ def find_font(bold: bool = False) -> Path:
         p = d / name
         if p.exists():
             return p
-    raise FontNotFound(f"한글 글꼴을 찾지 못했습니다: 맑은 고딕({name})이 {', '.join(map(str, _FONT_DIRS))}에 없습니다")
+    raise FontNotFound(f"동봉 한글 글꼴을 찾지 못했습니다: {name} — assets/fonts 폴더를 확인하세요")
 
 
 def _wrap(draw, text: str, font, max_w: int, max_lines: int) -> list[str]:

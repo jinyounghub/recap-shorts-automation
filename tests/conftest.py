@@ -8,6 +8,9 @@ def _settings_isolated(tmp_path_factory, monkeypatch):
     d = tmp_path_factory.mktemp("settings")
     monkeypatch.setenv("RECAP_SETTINGS_FILE", str(d / "settings.local.json"))
     for name in ("RECAP_GEMINI_API_KEY", "RECAP_CF_ACCOUNT_ID", "RECAP_CF_API_TOKEN",
+                 "RECAP_QWEN_COMMAND_JSON", "RECAP_QWEN_PYTHON", "RECAP_QWEN_SCRIPT",
+                 "RECAP_QWEN_MODEL", "RECAP_QWEN_DEVICE", "RECAP_QWEN_TIMEOUT",
+                 "RECAP_TTS_ENGINE", "RECAP_IMAGE_ENGINE", "RECAP_CODEX_PATH",
                  "RECAP_SENSEVOICE_DIR", "RECAP_SUPERTONIC_DIR",
                  "RECAP_SCRIPT_MODEL", "RECAP_TTS_MODEL", "RECAP_GEMINI_IMAGE_MODEL", "RECAP_TTS_SID"):
         monkeypatch.delenv(name, raising=False)

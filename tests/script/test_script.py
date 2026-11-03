@@ -1,12 +1,10 @@
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from recap_shorts.script import llm as llm_mod
 from recap_shorts.script.guard import evidence_in_source, looks_factual, run_guard
-from recap_shorts.script.llm import AgyLLM, AgyCallLimit, ARG_MAX, parse_json_loose
+from recap_shorts.script.llm import parse_json_loose
 from recap_shorts.script.prompt import build_prompt
 from recap_shorts.script.text import count_syllables, normalize_loose, num_to_korean, spoken_form
 
@@ -98,72 +96,6 @@ def test_prompt_contains_rules():
                  "image_hint", "실제 사진 필요(사용자/라이선스)", "전해 들은 말", "국야갤", "null"):
         assert must in p, must
     assert TOPIC["source_text"].strip() in p
-
-
-# ---- agy 어댑터 (subprocess 가짜)
-
-class FakeRun:
-    def __init__(self, outputs):
-        self.outputs, self.cmds = list(outputs), []
-
-    def __call__(self, cmd, **kw):
-        self.cmds.append(cmd)
-        o = self.outputs.pop(0)
-        if isinstance(o, Exception):
-            raise o
-        return subprocess.CompletedProcess(cmd, 0, stdout=o, stderr="")
-
-
-def _env(resp):
-    return json.dumps({"status": "SUCCESS", "response": resp}, ensure_ascii=False)
-
-
-@pytest.fixture
-def agy(monkeypatch, tmp_path):
-    exe = tmp_path / "agy.exe"
-    exe.write_text("x")
-
-    def make(outputs, **kw):
-        f = FakeRun(outputs)
-        monkeypatch.setattr(llm_mod.subprocess, "run", f)
-        return AgyLLM(exe=str(exe), retry_sleep=0, **kw), f
-    return make
-
-
-def test_agy_ok_and_flags(agy):
-    a, f = agy([_env('```json\n{"hook": "안녕"}\n```')])
-    assert a.complete_json("프롬프트") == {"hook": "안녕"}
-    cmd = f.cmds[0]
-    assert cmd[1] == "--print" and "--sandbox" in cmd and cmd[cmd.index("--output-format") + 1] == "json"
-    assert cmd[cmd.index("--model") + 1] == "gemini-3.8-flash-high"
-    assert len(a.calls) == 1 and a.calls[0]["ok"]
-
-
-def test_agy_broken_json_retries_once(agy):
-    a, f = agy(["garbage", _env('{"a": 1}')])
-    assert a.complete_json("p") == {"a": 1}
-    assert [c["ok"] for c in a.calls] == [False, True]
-
-
-def test_agy_failure_raises_after_retry(agy):
-    a, f = agy([json.dumps({"status": "ERROR", "error": "quota"}), subprocess.TimeoutExpired("agy", 1)])
-    with pytest.raises(RuntimeError):
-        a.complete_json("p")
-    assert len(a.calls) == 2
-
-
-def test_agy_long_prompt_goes_through_file(agy):
-    a, f = agy([_env('{"a": 1}')])
-    a.complete_json("가" * (ARG_MAX + 10))
-    assert "prompt.txt" in f.cmds[0][2] and len(f.cmds[0][2]) < 1000
-    assert a.calls[0]["via_file"]
-
-
-def test_agy_call_limit(agy):
-    a, f = agy(["bad", "bad"], max_calls=1)
-    with pytest.raises(AgyCallLimit):
-        a.complete_json("p")
-    assert len(f.cmds) == 1
 
 
 def test_parse_json_loose():

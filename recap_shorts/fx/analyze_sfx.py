@@ -1,4 +1,4 @@
-"""효과음 폴더 분석: 재기(무료) → Gemini 듣기 → 종류별 고르기 → 다듬어 꾸러미 만들기 (docs/library_analysis.md).
+"""효과음 폴더 분석: 재기(무료) → 로컬 오디오 모델 듣기 → 종류별 고르기 → 다듬어 꾸러미 만들기 (docs/library_analysis.md).
 
 원본 폴더는 읽기만 한다. 꾸러미(manifest.json + 다듬은 wav)는 fx/library.py 가 정한 자리에 만든다.
 규칙 값은 config/fx.json 의 analyze.sfx (없으면 아래 기본값).
@@ -291,20 +291,20 @@ def clean_heard(r: dict, types: list[str]) -> dict:
             "quality": int(q) if isinstance(q, (int, float)) and 1 <= q <= 5 else 3}
 
 
-def listen_batch(batch: list[tuple[str, Path, float]], types: list[str], *, model: str, listen_s: float,
+def listen_batch(batch: list[tuple[str, Path, float]], types: list[str], *, model: str | None, listen_s: float,
                  llm: Optional[Callable[[list], object]] = None) -> dict[str, dict]:
-    """[(key, 경로, 소리 시작)] 를 한 번에 들려주고 {key: heard}. llm 은 시험용(parts → 답)."""
+    """Injected local listener only; Codex vision cannot listen to audio clips.
+
+    Default production uses local measurements, names, and manual manifest tags.
+    A caller may inject its existing local audio model through ``llm``.
+    """
+    if llm is None:
+        raise RuntimeError("외부 음성 분석 API는 사용하지 않습니다. 로컬 측정값과 파일명·manifest 태그를 사용하세요.")
     parts: list[dict] = [{"text": build_prompt(types)}]
     for k, (key, p, onset) in enumerate(batch, 1):
         parts.append({"text": f'#{k} file: "{Path(key).stem}"'})
         parts.append({"inline_data": {"mime_type": "audio/wav", "data": clip_b64(p, onset, listen_s)}})
-    if llm is not None:
-        res = llm(parts)
-    else:
-        from recap_shorts.llm import gemini_api as G
-        body = {"contents": [{"role": "user", "parts": parts}],
-                "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}}
-        res = G._text_of(G._post(model, body, timeout=180))
+    res = llm(parts)
     if isinstance(res, str):
         res = parse_answer_list(res)
     elif isinstance(res, dict):       # {"items": [...]} 처럼 감싸 오는 경우

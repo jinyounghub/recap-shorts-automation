@@ -4,12 +4,11 @@ work/<job_id>/state.json 을 계속 갱신한다 (형식·단계: docs/03_v2_app
 - 사람 확인 단계(read·script·scenes·review)는 일을 마친 뒤 status="waiting" 으로 멈추고, continue 로 진행한다.
   options.auto_steps(또는 auto_topic=True)에 든 단계는 멈추지 않고 지나간다.
 - 재개: 이미 done 인 단계는 건너뛰고, error 단계는 continue 로 그 단계부터 다시 한다.
-- 바깥 세계(디시, Gemini, 이미지 서버, 목소리, 렌더, Clef)는 모두 Deps 를 거친다 — 시험은 Deps 를 가짜로 바꿔 끼운다.
+- 바깥 세계(커뮤니티, Codex, native imagegen, 로컬 목소리, 렌더)는 모두 Deps 를 거친다 — 시험은 Deps 를 가짜로 바꿔 끼운다.
 - 닉네임·IP 는 저장하지 않는다(collect 모듈이 이미 지킴). 화면에 출처 줄·글 제목 카드·배경음악을 넣지 않는다.
 """
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import queue
@@ -23,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from recap_shorts import errors
+from recap_shorts.images.codex_imagegen import PendingImages
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK_ROOT = Path(os.environ.get("RECAP_WORK_ROOT", ROOT / "work"))
@@ -33,17 +33,19 @@ STEPS = [("source", "글 가져오기"), ("read", "자료 읽기"), ("script", "
 STEP_KEYS = [k for k, _ in STEPS]
 CONFIRM_STEPS = ("read", "script", "scenes", "review")   # 사람이 확인하는 단계
 GALLERY_NAMES = {"baseball_new13": "국내야구", "dcbest": "실시간 베스트"}
-GEMINI_STEPS = ("read", "script", "voice", "assets")   # Gemini 를 부르는 단계(서버가 키 없이 이어 하기를 막을 때 쓴다)
 
 
 def site_of(source: dict) -> str:
-    """글 출처 — source.site 가 없던 때의 작업(디시)은 "dcinside" 로 읽는다."""
-    return "blind" if str((source or {}).get("site") or "dcinside").strip() == "blind" else "dcinside"
+    """명시적인 로컬 자료 출처를 보존하고, 출처가 없는 예전 작업만 디시로 읽는다."""
+    site = str((source or {}).get("site") or "dcinside").strip().lower()
+    return site if site in ("blind", "local") else "dcinside"
 
 
 def post_label(source: dict) -> str:
     """'디시인사이드 국내야구 갤러리' / '블라인드 블라블라 토픽' — 글이 어디서 왔는지 붙이는 이름."""
     site = site_of(source)
+    if site == "local":
+        return "사용자 제공 로컬 자료"
     if site == "blind":
         return f"블라인드 {source.get('topic') or '블라인드'} 토픽"
     return f"디시인사이드 {GALLERY_NAMES.get(source.get('gallery'), source.get('gallery'))} 갤러리"
@@ -57,7 +59,7 @@ def _safe_name(s: str) -> str:
 
 DEFAULT_OPTIONS = {
     "auto_steps": [],            # 멈추지 않고 지나갈 확인 단계 (예: ["read"])
-    "tts_engine": None,          # None = 설정 화면에서 고른 목소리 엔진(gemini | supertonic)
+    "tts_engine": None,          # None = 로컬 설정의 목소리 엔진(qwen | local | supertonic)
     "check_asr": True,
     "script_llm": None, "script_model": None, "refine": True,
     "no_image_gen": False, "max_ai_images": 12, "ai_workers": 2,
@@ -85,12 +87,8 @@ def clean_text(s: str) -> str:
 
 # ------------------------------------------------------------------ 바깥 세계
 def _clef(module: str, name: str, *args, **kw):
-    """recap_shorts.clef.<module>.<name>(...) — 모듈이 없거나 실패하면 None (Clef 없이도 앱은 돈다)."""
-    try:
-        fn = getattr(importlib.import_module(f"recap_shorts.clef.{module}"), name)
-        return fn(*args, **kw)
-    except Exception:  # noqa: BLE001
-        return None
+    """Legacy optional score hook. Cloudflare calls have been removed."""
+    return None
 
 
 class Deps:
@@ -134,9 +132,9 @@ class Deps:
         from recap_shorts.collect import dcinside
         return dcinside.screenshot_post(url, out_png, client=client)
 
-    # Gemini
+    # Codex OAuth
     def read_image(self, images: list, instruction: str) -> dict:
-        from recap_shorts.llm.gemini_api import read_images
+        from recap_shorts.llm.codex import read_images
         return read_images(images, instruction, json=True)
 
     def locate_regions(self, path: Path, wants: list[str]) -> dict:
@@ -178,28 +176,28 @@ class Deps:
         return _clef("inspect", "inspect_image", path, kind)
 
     def image_quality(self, paths: list[Path], hints: list[str]) -> dict:
-        """AI 이미지 결함 검사(Gemini 비전 1회). 시험 중에는 실제 API 를 부르지 않는다."""
+        """AI 이미지 결함 검사(Codex 비전 1회). 시험 중에는 실제 API 를 부르지 않는다."""
         if "PYTEST_CURRENT_TEST" in os.environ:
             return {"items": [], "worst": []}
         from recap_shorts.images import quality
         return quality.review(paths, hints)
 
     def sensitive_read(self, images: list, instruction: str) -> dict:
-        """그림 ≤8장의 자극·잔혹 정도 판정(Gemini 비전 1회, thinking low). 시험 중에는 실제 API 를 부르지 않는다."""
+        """그림 ≤8장의 자극·잔혹 정도 판정(Codex 비전 1회, thinking low). 시험 중에는 실제 API 를 부르지 않는다."""
         if "PYTEST_CURRENT_TEST" in os.environ:
             raise RuntimeError("시험 중에는 실제 API 를 부르지 않음")
-        from recap_shorts.llm.gemini_api import read_images
+        from recap_shorts.llm.codex import read_images
         return read_images(images, instruction, json=True, thinking="low")
 
     def entity_images(self, job_dir: Path, script: dict, timings: dict, topic: dict) -> dict:
-        """대본이 말하는 대상의 사진 찾기(Gemini 텍스트 1회 + 대상당 비전 ≤2회). 시험 중에는 아무것도 하지 않는다."""
+        """대본이 말하는 대상의 사진 찾기(Codex 텍스트 1회 + 대상당 비전 ≤2회). 시험 중에는 아무것도 하지 않는다."""
         if "PYTEST_CURRENT_TEST" in os.environ:
             return {"entries": [], "found": [], "missed": [], "extracted": [], "calls": 0}
         from recap_shorts.images import entities
         return entities.find_entity_images(job_dir, script, timings, topic, self.http_client(job_dir))
 
     def pick_panels(self, src: Path, boxes: list, sentences: list[dict]) -> dict:
-        """칸 쌓기 그림에서 문장별로 쓸 칸 고르기(Gemini 비전 1회). 시험 중에는 실제 API 를 부르지 않는다."""
+        """칸 쌓기 그림에서 문장별로 쓸 칸 고르기(Codex 비전 1회). 시험 중에는 실제 API 를 부르지 않는다."""
         if "PYTEST_CURRENT_TEST" in os.environ:
             return {"picks": []}
         from recap_shorts.images.regions import pick_panels
@@ -215,19 +213,19 @@ class Deps:
         return _clef("triage", "triage", posts)
 
     def topic_fit_llm(self, prompt: str, model: str) -> dict:
-        """채널 대주제 맞춤 점수용 Gemini 텍스트 1회(JSON 객체). 시험 중에는 실제 API 를 부르지 않고 예외를 낸다."""
-        from recap_shorts.collect.topicfit import gemini_llm
-        return gemini_llm(prompt, model)
+        """채널 대주제 맞춤 점수용 Codex 텍스트 1회(JSON 객체). 시험 중에는 실제 API 를 부르지 않고 예외를 낸다."""
+        from recap_shorts.collect.topicfit import codex_llm
+        return codex_llm(prompt, model)
 
 
 # ------------------------------------------------------------------ job 상태
 class Job:
     def __init__(self, root: Path, state: dict, dir: Path | None = None):
         self.root = Path(root)
-        self.dir = Path(dir) if dir else self.root / state["id"]   # 구글 드라이브로 옮긴 job 은 드라이브 폴더
+        self.dir = Path(dir) if dir else self.root / state["id"]   # 명시적으로 지정한 로컬 작업 폴더
         self.state = state
         self.lock = threading.RLock()
-        self.readonly = False        # 드라이브에 보관된 job 은 고칠 수 없고 state.json 도 다시 쓰지 않는다
+        self.readonly = False        # 명시적으로 읽기 전용으로 연 작업은 다시 쓰지 않는다
 
     @property
     def archived(self) -> bool:
@@ -342,38 +340,16 @@ class JobStore:
                         s.update(status="error", error="서버가 다시 시작되어 중단됨 — continue 로 이어서 합니다")
                 st["status"] = "error"
             self.jobs[st["id"]] = job
-        self._load_archived()
-
-    def _load_archived(self) -> None:
-        """work/_archive.json 의 보관 목록을 job 으로 올린다. 드라이브의 state.json 을 읽을 수 있으면 그것을, 아니면 색인의 요약을 쓴다."""
-        from recap_shorts import archive
-        for e in archive.load_index(self.root):
-            d = Path(e["path"])
-            st = None
-            try:
-                st = json.loads((d / "state.json").read_text(encoding="utf-8"))
-                if "steps" not in st or st.get("id") != e["id"]:
-                    st = None
-            except (OSError, ValueError):
-                st = None
-            offline = st is None
-            if offline:
-                st = json.loads(json.dumps(e.get("state") or {}))
-                if "steps" not in st or "id" not in st:
-                    continue
-                st.setdefault("log", [])
-            st["archive"] = {**(st.get("archive") or {}), "status": "done", "path": str(d),
-                             "at": e.get("archived_at") or (st.get("archive") or {}).get("at")}
-            st["offline"] = offline
-            st.setdefault("source", {})["site"] = site_of(st.get("source"))   # 예전 작업은 디시로
-            job = Job(self.root, st, dir=d)
-            job.readonly = True
-            self.jobs[st["id"]] = job
 
     def create(self, source: dict, options: dict | None = None) -> Job:
         src = dict(source)
         src["site"] = site_of(src)
-        jid = f"{datetime.now():%Y%m%d-%H%M%S}_{_safe_name(src['gallery'])}_{_safe_name(src['no'])}"
+        jid = f"{datetime.now():%Y%m%d-%H%M%S-%f}_{_safe_name(src['gallery'])}_{_safe_name(src['no'])}"
+        # Never reuse an existing job folder, including repeated CLI submissions.
+        base_id, collision = jid, 0
+        while (self.root / jid).exists():
+            collision += 1
+            jid = f"{base_id}_{collision}"
         opts = dict(options or {})
         if opts.pop("auto_topic", False):
             opts["auto_steps"] = sorted(set(opts.get("auto_steps") or []) | {"read"})
@@ -659,9 +635,8 @@ def step_voice(c: Ctx) -> None:
     from recap_shorts import modelfiles, settings
     engine = c.opt["tts_engine"] or settings.voice_engine()
     if engine == "supertonic" and not modelfiles.ok("supertonic"):
-        raise RuntimeError("로컬 목소리(Supertonic) 모델이 없습니다 — 설정 → 모델 파일에서 받거나, 목소리를 Gemini 로 바꾸세요")
-    c.progress(0.1, "목소리 합성 중 (로컬 목소리)" if engine == "supertonic"
-               else f"목소리 합성 중 ({settings.model('tts')}, 요청 1회)")
+        raise RuntimeError("로컬 Supertonic 모델 경로를 확인하세요. 기존 모델 파일을 사용해야 합니다")
+    c.progress(0.1, f"목소리 합성 중 ({engine}, 로컬)")
     c.sub("합성", "running")
     c.sub("받아쓰기 확인", "todo")
     t0 = time.time()
@@ -734,7 +709,7 @@ QUALITY_KO = {   # 결함 이름(검수 화면에 보이는 이유 글)
 
 
 def _quality_pass(c: Ctx, entries: list[dict]) -> None:
-    """AI 이미지 결함 검사(Gemini 비전 1회) → 나쁜 장을 한 번씩 다시 만든다(많아야 image_redo_max 장).
+    """AI 이미지 결함 검사(Codex 비전 1회) → 나쁜 장을 한 번씩 다시 만든다(많아야 image_redo_max 장).
     AI 이미지 퀄리티를 높이려고 스톡 사진 티(노을·빈 화면·네온)를 걸러 낸다."""
     from recap_shorts.images import provider, quality
     ai_ok = [e for e in entries if e["kind"] == "ai" and e["status"] == "ok"]
@@ -749,6 +724,14 @@ def _quality_pass(c: Ctx, entries: list[dict]) -> None:
     for e, row in zip(ai_ok, rows):
         e["quality"] = row
     redo = quality.pick_redo(rv, int(c.opt.get("image_redo_max", 3)))
+    if any(e.get("engine") == "codex-imagegen" for e in ai_ok):
+        # Native imagegen belongs to the supervising Codex session. Keep the
+        # verified originals and expose precise feedback for its visual review;
+        # a background Python retry must not invoke a paid image API instead.
+        for k in redo:
+            _flag_left(ai_ok[k], rows[k], "Codex에서 확인 후 필요하면 native imagegen으로 다시 생성")
+        c.sub("이미지 품질", "done", f"확인할 이미지 {len(redo)}장" if redo else "결함 없음")
+        return
     fixed, redone = 0, []
     for k in redo:
         e, row = ai_ok[k], rows[k]
@@ -788,7 +771,7 @@ def _flag_left(e: dict, row: dict, why: str) -> None:
 
 
 def _recheck(c: Ctx, redone: list[dict]) -> int:
-    """다시 만든 장만 한 번 더 검사(Gemini 비전 1회). 다시 만든 뒤에도 빈 격자 표가 그대로 남는 경우가 있다.
+    """다시 만든 장만 한 번 더 검사(Codex 비전 1회). 다시 만든 뒤에도 빈 격자 표가 그대로 남는 경우가 있다.
     심한 결함이 하나라도, 가벼운 결함이 2개 이상 남으면 표시한다 — 다시 검사한 장끼리라 '겹침'·'가장 나쁜 장'은 보지 않는다.
     검사가 실패하면 다시 만든 그림을 아무도 안 본 것이므로 같이 표시한다. 표시한 장 수를 돌려준다."""
     from recap_shorts.images.quality import SEVERE
@@ -882,7 +865,7 @@ def _sensitive_pass(c: Ctx, entries: list[dict]) -> None:
     t = res["treated"]
     parts = [f"{res['checked']}장 검사" + (f" · 흑백 {t['gray']}장" if t["gray"] else "") +
              (f" · 흑백+흐림 {t['gray_blur']}장" if t["gray_blur"] else "") +
-             (f" · Gemini {res['calls']}회" if res["calls"] else "")]
+             (f" · Codex {res['calls']}회" if res["calls"] else "")]
     if res["errors"]:
         parts.append(f"검사 못 함 {len(res['errors'])}장: {errors.reason(res['errors'][0])}")
         c.log(f"민감한 그림 검사 못 함 {len(res['errors'])}장(처리 없이 둠): {errors.reason(res['errors'][0])}")
@@ -923,6 +906,60 @@ def post_body_attachment(job_dir: Path, atts: list[dict]) -> dict | None:
     return {"n": 0, "file": "post/body.png", "kind": "글 본문 캡처", "summary": "글 본문", "body": True}
 
 
+def _image_input_hash(info: dict) -> str:
+    """A changed scene or prompt template invalidates its cached generation."""
+    from recap_shorts.images import provider
+    from recap_shorts.images.codex_imagegen import digest
+    values = [info["index"], info.get("role"), info["text"], info["hint"],
+              provider.HINT_INSTRUCTION, provider.COMMON_PREFIX, provider.COMMON_SUFFIX]
+    return digest(json.dumps(values, ensure_ascii=False))
+
+
+def _image_prompt_cache(c: Ctx) -> dict:
+    path = c.dir / "assets" / "image_prompts.json"
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("prompts"), dict):
+        raise ValueError("assets/image_prompts.json 형식이 올바르지 않습니다")
+    return data["prompts"]
+
+
+def _cached_ai(entry: dict, info: dict, cache: dict, job_dir: Path) -> bool:
+    """Reuse only a decodable file for this exact scene and prompt."""
+    from PIL import Image
+    from recap_shorts.images import codex_imagegen, provider
+    key = info["input_sha256"]
+    if entry.get("input_sha256") != key or entry.get("status") not in ("ok", "reused"):
+        return False
+    en = cache.get(key)
+    if not isinstance(en, str) or entry.get("prompt") != provider.build_prompt(en):
+        return False
+    path = job_dir / entry["file"]
+    if entry.get("engine") == codex_imagegen.PROVIDER:
+        return codex_imagegen.current(entry["prompt"], path)
+    try:
+        with Image.open(path) as im:
+            im.verify()
+        with Image.open(path) as im:
+            im.load()
+        return True
+    except (OSError, ValueError, SyntaxError):
+        return False
+
+
+def _prompts_for(c: Ctx, infos: list[dict], cache: dict) -> list[str]:
+    """Translate each scene once; retries use the same native-imagegen prompt."""
+    missing = [i for i in infos if i["input_sha256"] not in cache]
+    if missing:
+        values = c.deps.hint_prompts([f"(내레이션: {i['text']}) {i['hint']}" for i in missing])
+        if len(values) != len(missing) or any(not isinstance(v, str) or not v.strip() for v in values):
+            raise ValueError("이미지 프롬프트 개수 또는 내용이 올바르지 않습니다")
+        cache.update({i["input_sha256"]: value.strip() for i, value in zip(missing, values)})
+        c.write_json("assets/image_prompts.json", {"version": 1, "prompts": cache})
+    return [cache[i["input_sha256"]] for i in infos]
+
+
 def step_assets(c: Ctx) -> None:
     from recap_shorts.images import provider, regions
     from recap_shorts.images.captures import make_cards_for_image
@@ -930,209 +967,233 @@ def step_assets(c: Ctx) -> None:
     script, timings = c.read_json("script_final/script.json"), c.read_json("voice/timings.json")
     topic = c.read_json("topic.json")
     entries: list[dict] = []
-    # 1) 캡처 카드 — (가) 문장이 말하는 부분만 잘라 낸 확대 카드 (나) 첨부 그림 통째 (다) 글 머리(제목·조회 줄)
-    #    가릴 곳(아이디·프로필·얼굴·번호·욕설 낱말)은 비전 모델이 같은 호출에서 찾아 모자이크한다.
-    c.sub("캡처 카드", "running")
-    atts = [a for a in topic.get("attachments", []) if a.get("file") and (c.dir / a["file"]).is_file()]
-    try:
-        body = post_body_attachment(c.dir, atts)
-    except Exception as e:  # noqa: BLE001
-        body = None
-        c.log(f"본문 캡처 자르기 실패(건너뜀): {errors.reason(e)}")
-    if body:
-        atts.insert(0, body)
-    wants = capture_wants(script, timings)
-    cap_dir = c.dir / "assets" / "cap"
-    cap_dir.mkdir(parents=True, exist_ok=True)
-    for n, a in enumerate(atts):
-        c.progress(0.03 + 0.22 * n / max(1, len(atts)), f"캡처 {n + 1}/{len(atts)}: 문장이 말하는 부분과 가릴 곳을 찾는 중")
-        src = c.dir / a["file"]
-        # 칸 쌓기 그림(장면 수십 장을 회색 줄로 이은 것)은 통째·조각내기 대신 주제에 맞는 칸만 골라 쓴다
-        if not a.get("dc_comments") and not a.get("body"):
-            try:
-                if _panel_cards(c, a, src, cap_dir, entries, make_card, wants):
-                    continue
-            except Exception as e:  # noqa: BLE001
-                c.log(f"캡처 {a['n']} 칸 고르기 실패(기존 방식으로): {errors.reason(e)}")
-        found = None
-        try:
-            found = c.deps.locate_regions(src, [t for _, t in wants])
-        except Exception as e:  # noqa: BLE001
-            c.log(f"캡처 {a['n']} 위치 찾기 실패(통째 카드만): {errors.reason(e)}")
-        private = [tuple(b) for b in ((found or {}).get("private") or [])]
-        if private:
-            what = list((found or {}).get("private_what") or []) + [""] * len(private)
-            own = bool(a.get("dc_comments") or a.get("body"))       # 우리가 찍은 캡처: 이름은 캡처 때 이미 흐림
-            try:                                  # 비전 상자가 글줄에서 빗나가도 닉네임 줄을 끝까지 덮게
-                snapped = regions.snap_private(src, private)
-                private = [regions.keep_off_text(src, b) if own and w == "아이디" else s
-                           for b, s, w in zip(private, snapped, what)]
-            except Exception:  # noqa: BLE001
-                pass
-        info = None
-        try:
-            info = c.deps.clef_inspect(src, "capture")
-        except Exception:  # noqa: BLE001
-            info = None
-        risky = bool(info and ((info.get("face") or 0) >= 0.5 or (info.get("personal_text") or 0) >= 0.5))
-        flagged = bool(a.get("has_face") or a.get("has_id_text"))
-        if private:
-            reason, need = f"자동 가림 {len(private)}곳 — 빠진 곳은 '가리기'로 더하기", False
-        elif risky or flagged:
-            reason, need = "얼굴·아이디가 보일 수 있음 — 가림 확인", True
-        elif info is None or info.get("face") is None or info.get("personal_text") is None:
-            reason, need = "자동 점검 없음 — 사람 확인", True
-        else:
-            reason, need = None, False
-        base = {"kind": "cap", "status": "ok", "src": a["file"], "attachment": a["n"], "inspect": info,
-                "blur_boxes": [list(b) for b in private], "blurred": bool(private),
-                "needs_review": need, "review_reason": reason,
-                "unblurred_risk": bool((risky or flagged) and not private)}
-        try:
-            seen: dict[int, int] = {}
-            taken: list = []                      # 이 그림에서 이미 잘라 간 곳 — 거의 같은 곳이면 같은 카드가 두 번 나온다
-            for (sent, text), box in zip(wants, (found or {}).get("parts") or []):
-                if not box:
-                    continue
-                if any(regions.overlap_ratio(box, t) >= SAME_BOX for t in taken):
-                    c.log(f"캡처 {a['n']}: 문장 {sent} 이 앞 문장과 같은 곳이라 카드를 더 만들지 않음")
-                    continue
-                taken.append(box)
-                seen[sent] = seen.get(sent, 0) + 1
-                name = f"c{a['n']:02d}_s{sent:02d}" + (f"_{seen[sent]}" if seen[sent] > 1 else "")
-                out = cap_dir / f"{name}.png"
-                strip = None
-                if a.get("dc_comments") or a.get("body"):   # 댓글·글 본문 줄: 글자만 띠로 잘라(길면 접어) 크게 — PC 폭 캡처는 글자가 작다
-                    strip = regions.text_strip(src, box, private, c.dir / "post" / "strips" / f"{name}.png")
-                if strip:
-                    make_card(strip, out, label=None, max_upscale=regions.FOCUS_UPSCALE,
-                              backdrop=regions.context_of(src, box, private))
-                    entries.append({**base, "file": rel(c.job, out), "src": rel(c.job, strip), "sentence": sent,
-                                    "role": "focus", "want": text, "crop": None, "found": list(box),
-                                    "blur_boxes": [], "highlight": None})
-                    continue
-                crop, hl = regions.focus_crop(src, box)       # 자르는 선·빨간 테두리를 글줄 사이로
-                make_card(src, out, crop=crop, blur_boxes=private, label=None, highlight=hl,
-                          max_upscale=regions.FOCUS_UPSCALE)
-                entries.append({**base, "file": rel(c.job, out), "sentence": sent, "role": "focus", "want": text,
-                                "crop": list(crop), "found": list(box), "highlight": list(hl) if hl else None})
-            if not a.get("dc_comments"):          # 댓글 목록은 통째로는 안 씀(잘라 낸 댓글만)
-                for card in make_cards_for_image(src, cap_dir, f"c{a['n']:02d}", blur_boxes=private):
-                    entries.append({**base, "file": rel(c.job, card["file"]), "sentence": None, "crop": card.get("crop")})
-        except Exception as e:  # noqa: BLE001
-            c.log(f"캡처 카드 {a['n']} 실패: {errors.reason(e)}")
-    parts_p = c.dir / "post" / "screenshot_parts.json"
-    if parts_p.is_file() and (c.dir / "post" / "screenshot.png").is_file():
-        head = json.loads(parts_p.read_text(encoding="utf-8")).get("head")
-        where = "블라인드" if site_of(c.job.state["source"]) == "blind" else "디시"
-        hidden = "회사명" if where == "블라인드" else "닉네임"
-        try:
-            img = regions.dc_head_image(c.dir / "post" / "screenshot.png", head, c.dir / "post" / "dc_head.png") if head else None
-            if img:
-                out = cap_dir / "dc_head.png"
-                make_card(img, out, label=None, max_upscale=regions.FOCUS_UPSCALE)
-                entries.append({"file": rel(c.job, out), "kind": "cap", "status": "ok", "src": "post/dc_head.png",
-                                "attachment": None, "sentence": None, "role": "dc_head", "crop": None, "blur_boxes": [], "blurred": False,
-                                "needs_review": False, "review_reason": f"{where} 글 머리({hidden}은 캡처 때 흐림)"})
-        except Exception as e:  # noqa: BLE001
-            c.log(f"{where} 글 머리 카드 실패: {errors.reason(e)}")
-    nf = sum(1 for e in entries if e.get("role") == "focus")
-    c.sub("캡처 카드", "done", f"{len(entries)}장 (문장 부분 {nf}장)")
-    # 1-2) 대상 사진 — 대본이 말하는 캐릭터·작품 등의 실제 사진(위키백과·공용). 실패해도 작업은 계속한다.
-    if c.opt.get("entity_images", True):
-        c.sub("대상 사진", "running")
-        try:
-            res = c.deps.entity_images(c.dir, script, timings, topic)
-            entries += res.get("entries", [])
-            parts = []
-            if res.get("found"):
-                parts.append("찾음 " + ", ".join(res["found"]))
-            if res.get("missed"):
-                parts.append("못 찾음 " + ", ".join(res["missed"]))
-            c.sub("대상 사진", "done", " · ".join(parts) + (f" · Gemini {res.get('calls', 0)}회" if res.get("calls") else "")
-                  if parts else "사진이 필요한 대상 없음")
-            for line in res.get("log", []):
-                c.log(f"대상 사진: {line}")
-        except Exception as e:  # noqa: BLE001
-            c.log(f"대상 사진 찾기 실패(건너뜀): {errors.screen_text(e)}")
-            c.sub("대상 사진", "error", f"건너뜀 — {errors.screen_text(e)}")
-    # 2) AI 이미지
-    infos = [i for i in sentence_infos(script, timings) if wants_ai(i)][: int(c.opt["max_ai_images"])]
-    prev_path = c.dir / "assets" / "assets.json"
-    prev = {e["sentence"]: e for e in (json.loads(prev_path.read_text(encoding="utf-8")) if prev_path.is_file() else [])
-            if e.get("kind") == "ai" and e.get("status") in ("ok", "reused") and (c.dir / e["file"]).is_file()}
-    kept = [prev[i["index"]] for i in infos if i["index"] in prev]       # 다시 돌릴 때 이미 만든 그림은 그대로
-    entries += kept
-    infos = [i for i in infos if i["index"] not in prev]
-    reuse_dir = Path(c.opt["reuse_images_from"]) if c.opt["reuse_images_from"] else None
-    reuse_files = sorted(f for f in reuse_dir.glob("*.png") if not f.name.endswith(".orig.png")) if reuse_dir and reuse_dir.is_dir() else []
-    limit = c.opt["image_gen_limit"]
-    gen_ok = False
-    if infos and not c.opt["no_image_gen"]:
-        gen_ok = c.deps.image_available()
-    if not infos:
-        c.sub("AI 이미지", "done", f"이미 만든 {len(kept)}장 사용" if kept else "필요한 문장 없음")
-    elif not gen_ok and not reuse_files:
-        c.sub("AI 이미지", "error", "이미지 생성 꺼짐 — 캡처 카드만 씁니다" if not c.opt["no_image_gen"] else "꺼 둠")
-        c.log("AI 그림을 만들 수 없어(엔진 꺼짐 또는 키·서버 없음) 이미지를 만들지 않음")
+    # Cache source-derived cards and their Codex analysis while native imagegen
+    # is pending. Changed source bytes, text, script or options invalidate it.
+    from recap_shorts.images.codex_imagegen import digest, file_digest
+    source_files = [a.get("file") for a in topic.get("attachments", []) if a.get("file")]
+    source_files += ["post/screenshot.png", "post/screenshot_parts.json", "post/comments.png"]
+    fingerprints = {f: file_digest(c.dir / f) for f in source_files}
+    capture_key = digest(json.dumps([script, timings, topic, fingerprints, c.opt.get("entity_images", True)],
+                                   ensure_ascii=False, sort_keys=True))
+    capture_path = c.dir / "assets" / "prepared_captures.json"
+    prepared = json.loads(capture_path.read_text(encoding="utf-8")) if capture_path.is_file() else {}
+    cached = prepared.get("entries")
+    if (prepared.get("input_sha256") == capture_key and isinstance(cached, list)
+            and all((c.dir / e["file"]).is_file() for e in cached)):
+        entries = cached
+        c.sub("캡처 카드", "done", f"이미 준비한 {len(entries)}장 사용")
     else:
-        n_real = len(infos) if limit is None else min(int(limit), len(infos))
-        if not gen_ok:
-            n_real = 0
-        real, copy_ = infos[:n_real], infos[n_real:]
-        c.sub("AI 이미지", "running", f"새로 {len(real)}장 · 재사용 {len(copy_) if reuse_files else 0}장")
-        prompts: list[str] = []
-        if real:
-            c.progress(0.3, "문장 설명을 영어 이미지 프롬프트로 바꾸는 중")
-            prompts = c.deps.hint_prompts([f"(내레이션: {i['text']}) {i['hint']}" for i in real])
+        # 1) 캡처 카드 — (가) 문장이 말하는 부분만 잘라 낸 확대 카드 (나) 첨부 그림 통째 (다) 글 머리(제목·조회 줄)
+        #    가릴 곳(아이디·프로필·얼굴·번호·욕설 낱말)은 비전 모델이 같은 호출에서 찾아 모자이크한다.
+        c.sub("캡처 카드", "running")
+        atts = [a for a in topic.get("attachments", []) if a.get("file") and (c.dir / a["file"]).is_file()]
+        try:
+            body = post_body_attachment(c.dir, atts)
+        except Exception as e:  # noqa: BLE001
+            body = None
+            c.log(f"본문 캡처 자르기 실패(건너뜀): {errors.reason(e)}")
+        if body:
+            atts.insert(0, body)
+        wants = capture_wants(script, timings)
+        cap_dir = c.dir / "assets" / "cap"
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        for n, a in enumerate(atts):
+            c.progress(0.03 + 0.22 * n / max(1, len(atts)), f"캡처 {n + 1}/{len(atts)}: 문장이 말하는 부분과 가릴 곳을 찾는 중")
+            src = c.dir / a["file"]
+            # 칸 쌓기 그림(장면 수십 장을 회색 줄로 이은 것)은 통째·조각내기 대신 주제에 맞는 칸만 골라 쓴다
+            if not a.get("dc_comments") and not a.get("body"):
+                try:
+                    if _panel_cards(c, a, src, cap_dir, entries, make_card, wants):
+                        continue
+                except Exception as e:  # noqa: BLE001
+                    c.log(f"캡처 {a['n']} 칸 고르기 실패(기존 방식으로): {errors.reason(e)}")
+            found = None
+            try:
+                found = c.deps.locate_regions(src, [t for _, t in wants])
+            except Exception as e:  # noqa: BLE001
+                c.log(f"캡처 {a['n']} 위치 찾기 실패(통째 카드만): {errors.reason(e)}")
+            private = [tuple(b) for b in ((found or {}).get("private") or [])]
+            if private:
+                what = list((found or {}).get("private_what") or []) + [""] * len(private)
+                own = bool(a.get("dc_comments") or a.get("body"))       # 우리가 찍은 캡처: 이름은 캡처 때 이미 흐림
+                try:                                  # 비전 상자가 글줄에서 빗나가도 닉네임 줄을 끝까지 덮게
+                    snapped = regions.snap_private(src, private)
+                    private = [regions.keep_off_text(src, b) if own and w == "아이디" else s
+                               for b, s, w in zip(private, snapped, what)]
+                except Exception:  # noqa: BLE001
+                    pass
+            info = None
+            try:
+                info = c.deps.clef_inspect(src, "capture")
+            except Exception:  # noqa: BLE001
+                info = None
+            risky = bool(info and ((info.get("face") or 0) >= 0.5 or (info.get("personal_text") or 0) >= 0.5))
+            flagged = bool(a.get("has_face") or a.get("has_id_text"))
+            if private:
+                reason, need = f"자동 가림 {len(private)}곳 — 빠진 곳은 '가리기'로 더하기", False
+            elif risky or flagged:
+                reason, need = "얼굴·아이디가 보일 수 있음 — 가림 확인", True
+            elif info is None or info.get("face") is None or info.get("personal_text") is None:
+                reason, need = "자동 점검 없음 — 사람 확인", True
+            else:
+                reason, need = None, False
+            base = {"kind": "cap", "status": "ok", "src": a["file"], "attachment": a["n"], "inspect": info,
+                    "blur_boxes": [list(b) for b in private], "blurred": bool(private),
+                    "needs_review": need, "review_reason": reason,
+                    "unblurred_risk": bool((risky or flagged) and not private)}
+            try:
+                seen: dict[int, int] = {}
+                taken: list = []                      # 이 그림에서 이미 잘라 간 곳 — 거의 같은 곳이면 같은 카드가 두 번 나온다
+                for (sent, text), box in zip(wants, (found or {}).get("parts") or []):
+                    if not box:
+                        continue
+                    if any(regions.overlap_ratio(box, t) >= SAME_BOX for t in taken):
+                        c.log(f"캡처 {a['n']}: 문장 {sent} 이 앞 문장과 같은 곳이라 카드를 더 만들지 않음")
+                        continue
+                    taken.append(box)
+                    seen[sent] = seen.get(sent, 0) + 1
+                    name = f"c{a['n']:02d}_s{sent:02d}" + (f"_{seen[sent]}" if seen[sent] > 1 else "")
+                    out = cap_dir / f"{name}.png"
+                    strip = None
+                    if a.get("dc_comments") or a.get("body"):   # 댓글·글 본문 줄: 글자만 띠로 잘라(길면 접어) 크게 — PC 폭 캡처는 글자가 작다
+                        strip = regions.text_strip(src, box, private, c.dir / "post" / "strips" / f"{name}.png")
+                    if strip:
+                        make_card(strip, out, label=None, max_upscale=regions.FOCUS_UPSCALE,
+                                  backdrop=regions.context_of(src, box, private))
+                        entries.append({**base, "file": rel(c.job, out), "src": rel(c.job, strip), "sentence": sent,
+                                        "role": "focus", "want": text, "crop": None, "found": list(box),
+                                        "blur_boxes": [], "highlight": None})
+                        continue
+                    crop, hl = regions.focus_crop(src, box)       # 자르는 선·빨간 테두리를 글줄 사이로
+                    make_card(src, out, crop=crop, blur_boxes=private, label=None, highlight=hl,
+                              max_upscale=regions.FOCUS_UPSCALE)
+                    entries.append({**base, "file": rel(c.job, out), "sentence": sent, "role": "focus", "want": text,
+                                    "crop": list(crop), "found": list(box), "highlight": list(hl) if hl else None})
+                if not a.get("dc_comments"):          # 댓글 목록은 통째로는 안 씀(잘라 낸 댓글만)
+                    for card in make_cards_for_image(src, cap_dir, f"c{a['n']:02d}", blur_boxes=private):
+                        entries.append({**base, "file": rel(c.job, card["file"]), "sentence": None, "crop": card.get("crop")})
+            except Exception as e:  # noqa: BLE001
+                c.log(f"캡처 카드 {a['n']} 실패: {errors.reason(e)}")
+        parts_p = c.dir / "post" / "screenshot_parts.json"
+        if parts_p.is_file() and (c.dir / "post" / "screenshot.png").is_file():
+            head = json.loads(parts_p.read_text(encoding="utf-8")).get("head")
+            where = "블라인드" if site_of(c.job.state["source"]) == "blind" else "디시"
+            hidden = "회사명" if where == "블라인드" else "닉네임"
+            try:
+                img = regions.dc_head_image(c.dir / "post" / "screenshot.png", head, c.dir / "post" / "dc_head.png") if head else None
+                if img:
+                    out = cap_dir / "dc_head.png"
+                    make_card(img, out, label=None, max_upscale=regions.FOCUS_UPSCALE)
+                    entries.append({"file": rel(c.job, out), "kind": "cap", "status": "ok", "src": "post/dc_head.png",
+                                    "attachment": None, "sentence": None, "role": "dc_head", "crop": None, "blur_boxes": [], "blurred": False,
+                                    "needs_review": False, "review_reason": f"{where} 글 머리({hidden}은 캡처 때 흐림)"})
+            except Exception as e:  # noqa: BLE001
+                c.log(f"{where} 글 머리 카드 실패: {errors.reason(e)}")
+        nf = sum(1 for e in entries if e.get("role") == "focus")
+        c.sub("캡처 카드", "done", f"{len(entries)}장 (문장 부분 {nf}장)")
+        # 1-2) 대상 사진 — 대본이 말하는 캐릭터·작품 등의 실제 사진(위키백과·공용). 실패해도 작업은 계속한다.
+        if c.opt.get("entity_images", True):
+            c.sub("대상 사진", "running")
+            try:
+                res = c.deps.entity_images(c.dir, script, timings, topic)
+                entries += res.get("entries", [])
+                parts = []
+                if res.get("found"):
+                    parts.append("찾음 " + ", ".join(res["found"]))
+                if res.get("missed"):
+                    parts.append("못 찾음 " + ", ".join(res["missed"]))
+                c.sub("대상 사진", "done", " · ".join(parts) + (f" · Codex {res.get('calls', 0)}회" if res.get("calls") else "")
+                      if parts else "사진이 필요한 대상 없음")
+                for line in res.get("log", []):
+                    c.log(f"대상 사진: {line}")
+            except Exception as e:  # noqa: BLE001
+                c.log(f"대상 사진 찾기 실패(건너뜀): {errors.screen_text(e)}")
+                c.sub("대상 사진", "error", f"건너뜀 — {errors.screen_text(e)}")
+        c.write_json("assets/prepared_captures.json", {"input_sha256": capture_key, "entries": entries})
+    # 2) Native imagegen: queue missing files, then resume this incomplete stage.
+    from recap_shorts.images import codex_imagegen
+    infos = [i for i in sentence_infos(script, timings) if wants_ai(i)][:int(c.opt["max_ai_images"])]
+    for info in infos:
+        info["input_sha256"] = _image_input_hash(info)
+    cache = _image_prompt_cache(c)
+    prev_path = c.dir / "assets" / "assets.json"
+    previous = json.loads(prev_path.read_text(encoding="utf-8")) if prev_path.is_file() else []
+    prev = {e["sentence"]: e for e in previous if e.get("kind") == "ai"}
+    reuse_dir = Path(c.opt["reuse_images_from"]).expanduser() if c.opt["reuse_images_from"] else None
+    reuse_files = sorted(f for f in reuse_dir.glob("*.png") if not f.name.endswith(".orig.png")) if reuse_dir and reuse_dir.is_dir() else []
+    gen_ok = bool(infos and not c.opt["no_image_gen"] and c.deps.image_available())
+    limit = c.opt["image_gen_limit"]
+    n_real = (len(infos) if limit is None else min(max(0, int(limit)), len(infos))) if gen_ok else 0
+    real, copy_ = infos[:n_real], infos[n_real:]
+    kept = [prev[i["index"]] for i in real
+            if i["index"] in prev and _cached_ai(prev[i["index"]], i, cache, c.dir)]
+    entries += kept
+    kept_indices = {e["sentence"] for e in kept}
+    todo = [i for i in real if i["index"] not in kept_indices]
+    outputs = [c.dir / "assets" / "ai" / f"ai_{i['index']:02d}.png" for i in real]
+    manifest = c.dir / "assets" / codex_imagegen.MANIFEST_NAME
+    codex_imagegen.retain_outputs(manifest, outputs)
+    pending = []
+    if not infos:
+        c.sub("AI 이미지", "done", "필요한 문장 없음")
+    elif not gen_ok and not reuse_files:
+        c.sub("AI 이미지", "done", "AI 생성 꺼짐 — 캡처 카드만 사용")
+    else:
+        c.sub("AI 이미지", "running", f"검증된 이미지 {len(kept)}장 · 요청/확인 {len(todo)}장")
+        prompts = _prompts_for(c, todo, cache)
         (c.dir / "assets" / "ai").mkdir(parents=True, exist_ok=True)
-        done_count = [0]
-
-        def finish(k):
-            done_count[0] += 1
-            c.progress(0.35 + 0.6 * done_count[0] / max(1, len(real)), f"AI 이미지 {done_count[0]}/{len(real)} 완성")
-
-        results = [None] * len(real)
-        if real:
-            lock = threading.Lock()
-
-            def one(k):
-                out = c.dir / "assets" / "ai" / f"ai_{real[k]['index']:02d}.png"
-                full = provider.build_prompt(prompts[k])
-                r = c.deps.generate_image(full, out)
-                r["prompt"], r["prompt_en"] = full, prompts[k]
-                with lock:
-                    results[k] = r
-                    finish(k)
-
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=max(1, min(int(c.opt["ai_workers"]), 2))) as ex:
-                list(ex.map(one, range(len(real))))
-        for k, info in enumerate(real):
-            r = results[k]
-            f = c.dir / "assets" / "ai" / f"ai_{info['index']:02d}.png"
-            entries.append({"file": rel(c.job, f), "kind": "ai", "sentence": info["index"],
-                            "status": "ok" if r["ok"] and f.is_file() else "error", "error": r.get("error"),
-                            "hint": info["hint"], "prompt": r.get("prompt"), "prompt_en": r.get("prompt_en"),
-                            "seconds": r.get("seconds")})
+        # Registration is cheap and sequential: one manifest update per image,
+        # with no subprocess or network generation hidden inside this loop.
+        for k, (info, en) in enumerate(zip(todo, prompts)):
+            out = c.dir / "assets" / "ai" / f"ai_{info['index']:02d}.png"
+            full = provider.build_prompt(en)
+            result = c.deps.generate_image(full, out)
+            ok = bool(result.get("ok") and out.is_file())
+            state = "ok" if ok else ("awaiting_images" if result.get("pending") else "error")
+            entry = {"file": rel(c.job, out), "kind": "ai", "sentence": info["index"],
+                     "status": state, "error": result.get("error"), "hint": info["hint"],
+                     "input_sha256": info["input_sha256"], "prompt": full, "prompt_en": en,
+                     "engine": result.get("engine"), "seconds": result.get("seconds"),
+                     "sha256": result.get("sha256")}
+            entries.append(entry)
+            if result.get("pending"):
+                pending.append(entry)
+            c.progress(0.35 + 0.5 * (k + 1) / max(1, len(todo)), f"AI 이미지 요청 확인 {k + 1}/{len(todo)}")
         for k, info in enumerate(copy_):
             if not reuse_files:
                 break
             srcf = reuse_files[(n_real + k) % len(reuse_files)]
-            f = c.dir / "assets" / "ai" / f"ai_{info['index']:02d}.png"
-            shutil.copy(srcf, f)
-            entries.append({"file": rel(c.job, f), "kind": "ai", "sentence": info["index"], "status": "reused",
-                            "error": None, "hint": info["hint"], "reused_from": str(srcf)})
+            out = c.dir / "assets" / "ai" / f"ai_{info['index']:02d}.png"
+            if srcf.resolve() != out.resolve():
+                shutil.copy(srcf, out)
+            entries.append({"file": rel(c.job, out), "kind": "ai", "sentence": info["index"],
+                            "status": "reused", "error": None, "hint": info["hint"],
+                            "input_sha256": info["input_sha256"], "reused_from": str(srcf)})
+        # Persist complete and pending assets before yielding. Captures do not
+        # make a requested native image optional, and resume never reruns TTS.
+        c.write_json("assets/assets.json", entries)
+        c.job.artifact("assets", "assets/assets.json")
+        if pending:
+            c.sub("AI 이미지", "awaiting_images", f"Codex 내장 imagegen으로 {len(pending)}장 생성 후 resume")
+            raise PendingImages(manifest, len(pending))
         bad = [e for e in entries if e["kind"] == "ai" and e["status"] == "error"]
-        okn = sum(1 for e in entries if e["kind"] == "ai" and e["status"] != "error")
-        c.sub("AI 이미지", "error" if bad else "done",
-              f"{okn}장" + (f" · 실패 {len(bad)}장: {errors.screen_text(bad[0]['error'])}" if bad else ""))
-        for b in bad:
-            c.log(f"AI 이미지 실패(문장 {b['sentence']}): {errors.screen_text(b['error'])}")
+        if bad:
+            raise RuntimeError(f"요청한 AI 이미지 {len(bad)}장 생성 실패: {bad[0].get('error')}")
+        c.sub("AI 이미지", "done", f"{sum(e['kind'] == 'ai' for e in entries)}장 검증")
         if gen_ok and real and c.opt.get("image_quality_check", True):
             _quality_pass(c, entries)
     # 2-2) 자극적인 그림(피·부상·시신·선정적 …)에 흑백/흐림 — 캡처 카드·대상 사진·AI 이미지를 한 번에 훑는다
     _sensitive_pass(c, entries)
+    # Local grayscale/blur processing can change the PNG bytes. Record the
+    # final verified bytes so the manifest and subsequent cache checks agree.
+    for e in entries:
+        if e.get("engine") == codex_imagegen.PROVIDER and e.get("status") == "ok":
+            verified = codex_imagegen.request(e["prompt"], c.dir / e["file"])
+            if not verified["ok"]:
+                e["status"] = "awaiting_images"
+                c.write_json("assets/assets.json", entries)
+                raise PendingImages(manifest, 1)
+            e["sha256"] = verified["sha256"]
     # 3) 이미지 검사 (Clef 있으면)
     c.sub("이미지 검사", "running")
     checked = 0
@@ -1150,7 +1211,7 @@ def step_assets(c: Ctx) -> None:
                     e["recommend_regenerate"] = True
                     why = "글자·로고 또는 실존 인물처럼 보임 — 다시 만들기 추천"
                     e["review_reason"] = f"{e['review_reason']} / {why}" if e.get("review_reason") else why
-    c.sub("이미지 검사", "done", f"{checked}장 점검" if checked else "Clef 없음 — 사람 확인")
+    c.sub("이미지 검사", "done", f"{checked}장 점검" if checked else "자동 검사 없음 — Codex에서 직접 확인 필요")
     usable = [e for e in entries if e["status"] != "error"]
     if not usable:
         raise RuntimeError("쓸 수 있는 그림이 하나도 없습니다")
@@ -1164,7 +1225,7 @@ def step_assets(c: Ctx) -> None:
 def load_assets(job: Job) -> list[dict]:
     p = job.dir / "assets" / "assets.json"
     entries = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else []
-    return [e for e in entries if e.get("status") != "error" and (job.dir / e["file"]).is_file()]
+    return [e for e in entries if e.get("status") in ("ok", "reused") and (job.dir / e["file"]).is_file()]
 
 
 def build_plan(job: Job, deps: Deps, ctx: Ctx | None = None) -> dict:
@@ -1380,11 +1441,15 @@ def make_description(job: Job) -> str:
     shown = {e.get("attachment") for e in entries if e["kind"] == "cap" and e["file"] in used and e.get("attachment")}
     if shown:
         atts = [a for a in atts if a.get("n") in shown]
-    where = post_label(src)
+    local = site_of(src) == "local"
+    where = str(topic.get("source_label") or post_label(src)) if local else post_label(src)
     date = (src.get("written_at") or "")[:10]
+    source_title = str(topic.get("topic") or src.get("title") or "제목 없는 자료") if local else str(src.get("title") or "")
+    source_url = str(topic.get("source_url") or src.get("url") or "") if local else str(src.get("url") or "")
     lines = [" ".join(script.get("title_lines") or [job.state["title"]]), "", "[출처]",
-             f"- {where} 게시글 「{src.get('title')}」" + (f" ({date})" if date else ""),
-             f"  {src.get('url')}"]
+             f"- {where}{'' if local else ' 게시글'} 「{source_title}」" + (f" ({date})" if date else "")]
+    if source_url:
+        lines.append(f"  {source_url}")
     if atts:
         kinds = ", ".join(dict.fromkeys(("팬이 만든 " if a.get("fan_made") else "") + a["kind"] for a in atts))
         lines.append(f"  · 게시글 첨부 이미지: {kinds}")
@@ -1398,12 +1463,13 @@ def make_description(job: Job) -> str:
     credits = sfx_credits(job)
     if credits:
         lines += ["", "[효과음]"] + [f"- {c}" for c in credits]
-    notes = ["내용은 위 커뮤니티 게시글 기준이며 공식 기록과 대조하지 않았습니다."]
+    notes = ["내용은 사용자가 제공한 자료를 기준으로 작성했습니다." if local
+             else "내용은 위 커뮤니티 게시글 기준이며 공식 기록과 대조하지 않았습니다."]
     if any(a.get("fan_made") for a in atts):
         notes[0] = "내용은 위 커뮤니티 게시글 기준이며, 팬이 만든 자료(확인되지 않음)가 포함돼 있습니다."
     if ai_used:
         notes.append("일부 장면은 AI로 생성한 이미지입니다(실제 인물·현장 사진이 아님).")
-    notes.append("내레이션은 AI 음성입니다(Google Gemini TTS).")
+    notes.append("내레이션은 로컬 모델로 합성한 AI 음성입니다.")
     lines += ["", "[알림]"] + [f"- {n}" for n in notes]
     return "\n".join(lines) + "\n"
 
@@ -1438,7 +1504,7 @@ def step_review(c: Ctx) -> None:
               "first_cut": tl["hook"]["end"], "syllables": check["checks"]["syllables"]["total"],
               "speech_rate": tm.get("rate"), "asr_mean_match": tm.get("asr_mean_match"),
               "script_flags": check.get("flags", []), "clef": None}
-    c.progress(0.4, "영상 점검 중 (Clef-omni)")
+    c.progress(0.4, "Codex에서 확인할 검수 자료를 정리하는 중")
     c.sub("영상 점검", "running")
     topic_line = " ".join(script.get("title_lines") or [])
     try:
@@ -1447,7 +1513,7 @@ def step_review(c: Ctx) -> None:
         w = None
         c.log(f"영상 점검 실패: {errors.reason(e)}")
     review["clef"] = w
-    c.sub("영상 점검", "done", "점검 결과 있음(참고용)" if w else "Clef 없음 — 사람 확인")
+    c.sub("영상 점검", "done", "점검 결과 있음(참고용)" if w else "자동 검사 없음 — Codex에서 직접 확인 필요")
     review["needs_review_assets"] = [e["file"] for e in load_assets(c.job) if e.get("needs_review") or e.get("recommend_regenerate")]
     review["sfx_rights"] = sfx_rights_warnings(tl)
     review["sensitive"] = sensitive_pictures(c.job, tl)
@@ -1531,6 +1597,13 @@ class Runner:
             t0 = time.time()
             try:
                 STEP_FUNCS[key](ctx)
+            except PendingImages as e:
+                job.update_step(key, status="awaiting_images", ended_at=None, error=None,
+                                detail=f"Codex imagegen {e.count}장 대기")
+                job.artifact("imagegen_tasks", rel(job, e.manifest))
+                job.log(f"Codex imagegen 파일을 저장한 뒤 resume: {rel(job, e.manifest)}")
+                job.set_status("awaiting_images")
+                return
             except Exception as e:  # noqa: BLE001
                 msg = report_error(job, f"{key}({st['label']})", e)
                 job.update_step(key, status="error", ended_at=now(), error=msg, detail="오류로 멈춤")
@@ -1547,17 +1620,7 @@ class Runner:
             job.log(f"{st['label']} 끝 ({time.time() - t0:.0f}초)")
         job.set_status("done")
         job.log("모든 단계 끝")
-        self.archive_after_done(job)
 
-    def archive_after_done(self, job: Job) -> None:
-        """끝난 job 을 구글 드라이브로 옮긴다(설정이 켜져 있을 때). 실패해도 job 은 done 으로 둔다."""
-        try:
-            from recap_shorts import archive
-            if archive.load_config().get("enabled"):
-                archive.archive_job_record(job)
-        except Exception as e:  # noqa: BLE001
-            write_error_log(job, "archive", e)
-            job.log(f"보관 중 오류(무시): {errors.screen_text(e)}")
 
 
 class Busy(RuntimeError):

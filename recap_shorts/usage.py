@@ -1,6 +1,6 @@
 """유료·한도 있는 외부 호출 기록(비용 계산용). 호출마다 JSON 한 줄을 work/_usage.jsonl 에 붙인다.
 
-- 기록: 시각, 종류(gemini_text / gemini_tts / clef / image), 모델, 토큰·뉴런·초 같은 양. 키·프롬프트 본문은 남기지 않는다.
+- 기록: 시각, 종류(codex / local_tts / imagegen), 모델, 토큰·뉴런·초 같은 양. 키·프롬프트 본문은 남기지 않는다.
 - 경로: 환경변수 RECAP_USAGE_LOG (빈 문자열이면 끔), 기본 <저장소>/work/_usage.jsonl (work/ 는 gitignore).
 - pytest 안에서는 기록하지 않는다. 기록이 실패해도 호출은 그대로 진행한다.
 """

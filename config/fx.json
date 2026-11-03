@@ -3,7 +3,7 @@
   "enabled": true,
   "beats": {
     "use_llm": true,
-    "model": "gemini-3.8-flash",
+    "model": null,
     "cache": "fx/beats.json"
   },
   "memes": {
@@ -91,7 +91,7 @@
     "full_shot_margin": 0,
     "_note_library": "짤은 assets_local/memes_r 꾸러미(manifest 에 원본 출처를 적은 것)에서만 고른다. 상자 가득 흰 바탕 1.2초, 영상당 중앙 1개.",
     "pick_by": "fit",
-    "_note_fit": "박자 라벨만 보고 고르면 평범한 사실 문장에 '이겼다' 표정의 페페가 붙는다. pick_by 'fit' = 박자 라벨 대신 문장 전체와 짤 뜻(manifest meaning)을 Gemini 3.8 Flash 가 함께 보고, 반응이 자연스러운 문장에만 고름. 어울리는 곳이 없거나 호출이 실패하면 짤 없이 감. 'beats' = 예전 방식."
+    "_note_fit": "박자 라벨만 보고 고르면 평범한 사실 문장에 '이겼다' 표정의 페페가 붙는다. pick_by 'fit' = 박자 라벨 대신 문장 전체와 짤 뜻(manifest meaning)을 Codex 3.8 Flash 가 함께 보고, 반응이 자연스러운 문장에만 고름. 어울리는 곳이 없거나 호출이 실패하면 짤 없이 감. 'beats' = 예전 방식."
   },
   "sfx": {
     "enabled": true,
@@ -100,7 +100,9 @@
       "assets/sfx_packs/chime"
     ],
     "avoid_rights_risk": null,
-    "ban_sources": ["emotional-damage-auughhh"],
+    "ban_sources": [
+      "emotional-damage-auughhh"
+    ],
     "_note_ban": "쓰지 않기로 한 효과음(scream_01, emotional damage). 원본 파일 이름 앞부분으로 뺀다.",
     "_note_rights": "효과음 저작권 점검(config/sfx_rights.json, 원본 파일 이름만 보고 매긴 판단). 영상에 high·medium 소리가 들어가면 검수 화면이 경고만 한다(빼지 않음). 여기를 \"high\" 로 두면 high 를, \"medium\" 이면 medium 이상을 아예 고르지 않는다(그 종류가 비면 그 자리는 건너뜀). null = 끔(기본, 고르기는 예전 그대로). 목록: python -m recap_shorts.fx rights",
     "min_gap_s": 0.5,
@@ -221,8 +223,8 @@
     "_note_whoosh": "휙 소리(카드 튐의 whoosh_short_01, 컷의 whoosh_01)는 어색하게 들려 쓰지 않는다: 꾸러미·컷 순환·끝에서 빼고, 카드 튐 자리(hook.pop)는 끈다. 꾸러미에 대신할 휙 소리가 없어 그 자리는 비워 둔다."
   },
   "analyze": {
-    "_doc": "효과음·짤 폴더 분석(docs/library_analysis.md). 설정 화면에서 폴더를 고르면 Gemini 가 6개씩 듣거나 보고 매긴 뒤 종류별로 골라 assets_local/analyzed/ 에 꾸러미를 만든다. 원본 폴더는 바꾸지 않는다.",
-    "model": "gemini-3.8-flash",
+    "_doc": "효과음·짤 폴더 분석(docs/library_analysis.md). 설정 화면에서 폴더를 고르면 Codex 가 6개씩 듣거나 보고 매긴 뒤 종류별로 골라 assets_local/analyzed/ 에 꾸러미를 만든다. 원본 폴더는 바꾸지 않는다.",
+    "model": null,
     "sfx": {
       "max_files": 800,
       "max_file_s": 40,
@@ -231,10 +233,33 @@
       "min_quality": 3,
       "max_clip_ratio": 0.02,
       "drop_owner_clear": true,
-      "want": {"pop": 4, "*": 3},
-      "max_active_s": {"hit": 0.6, "pop": 1.0, "ding": 2.0, "sparkle": 2.5, "boom": 3.0, "*": 3.5},
-      "cap_s": {"hit": 0.35, "pop": 0.6, "ding": 1.2, "sparkle": 1.0, "boom": 1.6, "huh": 1.3, "scream": 1.6,
-                "awkward": 1.8, "sad": 2.2, "laugh": 2.0, "sus": 1.8, "punchline": 1.8, "*": 1.8},
+      "want": {
+        "pop": 4,
+        "*": 3
+      },
+      "max_active_s": {
+        "hit": 0.6,
+        "pop": 1.0,
+        "ding": 2.0,
+        "sparkle": 2.5,
+        "boom": 3.0,
+        "*": 3.5
+      },
+      "cap_s": {
+        "hit": 0.35,
+        "pop": 0.6,
+        "ding": 1.2,
+        "sparkle": 1.0,
+        "boom": 1.6,
+        "huh": 1.3,
+        "scream": 1.6,
+        "awkward": 1.8,
+        "sad": 2.2,
+        "laugh": 2.0,
+        "sus": 1.8,
+        "punchline": 1.8,
+        "*": 1.8
+      },
       "_note": "종류마다 want 개까지(점수 = 어울림×2 + 품질), 소리 길이가 max_active_s 를 넘으면 그 종류 후보에서 뺌, 다듬을 때 cap_s 초에서 자름. 파일 이름에 종류가 있으면(pop_01.wav) 그 종류로 개수 제한 없이 둔다."
     },
     "meme": {
@@ -252,8 +277,15 @@
     "cuts_at_word_gaps": true,
     "word_cuts": {
       "asr": "auto",
-      "min_len_s": [0.7, 0.55, 0.4],
-      "good_len_s": [0.8, 2.2],
+      "min_len_s": [
+        0.7,
+        0.55,
+        0.4
+      ],
+      "good_len_s": [
+        0.8,
+        2.2
+      ],
       "lead_s": 0.0,
       "snap_meme_s": 0.4
     },

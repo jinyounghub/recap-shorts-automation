@@ -58,7 +58,8 @@ def test_full_flow_waits_at_confirm_steps(tmp_path):
     assert draft["sentences"][0]["text"] != final["sentences"][0]["text"]
     assert [s["evidence"] for s in draft["sentences"]] == [s["evidence"] for s in final["sentences"]]
     desc = (d / "out/description.txt").read_text(encoding="utf-8")
-    assert "Google Gemini TTS" in desc and "AI로 생성한 이미지" in desc and "팬이 만든" in desc
+    assert "로컬 모델" in desc and "AI로 생성한 이미지" in desc and "팬이 만든" in desc
+    assert "Gemini TTS" not in desc
     assert "gall.dcinside.com" in desc
     # 화면: 출처 줄 없음, 배경음악 없음
     tl = json.loads((d / "timeline.json").read_text(encoding="utf-8"))
@@ -129,13 +130,13 @@ def test_reuse_and_gen_limit(tmp_path):
     assert any(e["kind"] == "cap" for e in ents)
 
 
-def test_image_server_off_uses_captures_only(tmp_path):
+def test_image_generation_off_uses_captures_only(tmp_path):
     deps = FakeDeps(image_up=False)
     store, runner, job = make(tmp_path, deps, {"auto_steps": ["read", "script"]})
     go(runner, job)
     ents = json.loads((job.dir / "assets/assets.json").read_text(encoding="utf-8"))
     assert all(e["kind"] == "cap" for e in ents)
-    assert {x["label"]: x for x in job.step("assets")["sub"]}["AI 이미지"]["status"] == "error"          # 꺼짐 표시
+    assert {x["label"]: x for x in job.step("assets")["sub"]}["AI 이미지"]["status"] == "done"           # 명시적으로 끈 생성은 오류가 아님
     assert statuses(job)["scenes"] == "waiting"                        # 다른 단계는 계속
 
 

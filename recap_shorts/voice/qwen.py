@@ -1,14 +1,20 @@
-"""Qwen3-TTS VoiceDesign 1.7B 엔진 (별도 가상환경 tools/qwen_tts/.venv 의 synth_cli.py 를 subprocess 로 부름).
+"""기존 로컬 Qwen TTS 실행 환경을 부르는 어댑터.
 
 목소리 일관성: VoiceDesign 은 호출마다 목소리가 달라질 수 있어, 내레이션 전체를 한 번에 합성한 뒤 문장별로 자른다.
 자르기 = 문장 사이 쉼(무음) 중, 음절 수 비율로 예상한 경계에 가장 가까운 쉼. 자른 조각마다 SenseVoice 로 받아써서
 원문과 일치율을 보고, 낮으면 seed 를 바꿔 다시 합성(최대 3회).
-설정(환경변수): RECAP_QWEN_PYTHON(qwen 가상환경 python 경로), RECAP_QWEN_TIMEOUT(초, 기본 1800).
+RECAP_QWEN_COMMAND_JSON: 기존 Qwen/MLX 실행 명령의 JSON argv 배열(shell 사용 안 함).
+지원 치환: {request_json}, {text_file}, {text}, {output}, {instruct}, {seed}, {language}.
+명령을 지정하지 않으면 RECAP_QWEN_PYTHON + RECAP_QWEN_SCRIPT 를 사용한다.
+모델·가상환경을 설치하거나 바꾸지 않는다. 출력 WAV 가 실제로 있어야 성공이다.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -39,7 +45,52 @@ class QwenUnavailable(RuntimeError):
 
 
 def python_exe() -> Path:
-    return Path(os.environ.get("RECAP_QWEN_PYTHON") or DEFAULT_PYTHON)
+    return Path(os.environ.get("RECAP_QWEN_PYTHON") or DEFAULT_PYTHON).expanduser()
+
+
+def command_spec() -> list[str] | None:
+    """명령 문자열을 셸에서 해석하지 않고 명시적인 argv 배열만 허용한다."""
+    raw = os.environ.get("RECAP_QWEN_COMMAND_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise QwenUnavailable("RECAP_QWEN_COMMAND_JSON 은 JSON 문자열 배열이어야 합니다") from e
+    if not isinstance(value, list) or not value or any(not isinstance(v, str) for v in value) or not value[0].strip():
+        raise QwenUnavailable("RECAP_QWEN_COMMAND_JSON 은 실행 파일로 시작하는 문자열 argv 배열이어야 합니다")
+    if not any("{output}" in v or "{request_json}" in v for v in value):
+        raise QwenUnavailable("로컬 TTS 명령에는 {output} 또는 {request_json} 이 필요합니다")
+    return value
+
+
+def configured_command() -> list[str]:
+    """실행 가능한 기존 명령을 확인한다. 모델을 로드하거나 네트워크에 연결하지 않는다."""
+    command = command_spec()
+    if command is None:
+        py = python_exe()
+        script = Path(os.environ.get("RECAP_QWEN_SCRIPT") or CLI).expanduser()
+        if not py.is_file() or not script.is_file():
+            raise QwenUnavailable(
+                "기존 로컬 TTS 명령을 RECAP_QWEN_COMMAND_JSON 에 지정하거나, "
+                "RECAP_QWEN_PYTHON 과 RECAP_QWEN_SCRIPT 를 기존 환경에 연결하세요"
+            )
+        # Keep the venv/bin/python entry point. Resolving its symlink launches
+        # the base interpreter and loses packages installed in the user's venv.
+        command = [str(py.absolute()), str(script.resolve()), "{request_json}"]
+    exe = os.path.expanduser(command[0])
+    resolved = shutil.which(exe)
+    if not resolved:
+        raise QwenUnavailable(f"로컬 TTS 실행 파일을 찾을 수 없거나 실행 권한이 없습니다: {exe}")
+    return [resolved, *command[1:]]
+
+
+def configuration_key() -> str:
+    """미리듣기 캐시가 기존 로컬 설정 변경을 반영하도록 하는 비밀 없는 식별자."""
+    return json.dumps({k: os.environ.get(k, "") for k in (
+        "RECAP_QWEN_COMMAND_JSON", "RECAP_QWEN_PYTHON", "RECAP_QWEN_SCRIPT",
+        "RECAP_QWEN_MODEL", "RECAP_QWEN_DEVICE",
+    )}, sort_keys=True)
 
 
 # ---------------------------------------------------------------- 쉼 찾기·자르기 (GPU·네트워크 없이 시험 가능)
@@ -187,23 +238,66 @@ def split_wav(x: np.ndarray, sr: int, cuts: list[float]) -> list[np.ndarray]:
 
 def run_cli(text: str, instruct: str, seed: int, out_wav: Path, language: str = "Korean",
             work: Path | None = None) -> dict:
-    py = python_exe()
-    if not py.exists() or not CLI.exists():
-        raise QwenUnavailable(f"qwen 환경 없음: {py} (tools/qwen_tts 설치 필요, requirements-qwen.txt 참고)")
-    work = work or out_wav.parent
+    if not text.strip():
+        raise ValueError("합성할 내레이션이 비어 있습니다")
+    command = configured_command()
+    out_wav = Path(out_wav).expanduser().resolve()
+    work = Path(work).expanduser().resolve() if work else out_wav.parent
     work.mkdir(parents=True, exist_ok=True)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
     req = work / f"req_seed{seed}.json"
-    req.write_text(json.dumps({"text": text, "instruct": instruct, "language": language, "seed": seed,
-                               "out": str(out_wav)}, ensure_ascii=False), encoding="utf-8")
-    r = subprocess.run([str(py), str(CLI), str(req)], capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=int(os.environ.get("RECAP_QWEN_TIMEOUT", "1800")),
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    text_file = work / f"text_seed{seed}.txt"
+    text_file.write_text(text, encoding="utf-8")
+    request = {"text": text, "instruct": instruct, "language": language, "seed": seed, "out": str(out_wav)}
+    if os.environ.get("RECAP_QWEN_MODEL"):
+        request["model"] = os.environ["RECAP_QWEN_MODEL"]
+    req.write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+    replacements = {"request_json": str(req), "text_file": str(text_file), "text": text,
+                    "output": str(out_wav), "instruct": instruct, "seed": str(seed), "language": language}
+    argv = []
+    pattern = re.compile(r"\{(" + "|".join(replacements) + r")\}")
+    for arg in command:
+        argv.append(pattern.sub(lambda m: replacements[m[1]], arg))
+    # A previous attempt must not make a successful no-op command look like synthesis.
+    out_wav.unlink(missing_ok=True)
+    started = time.monotonic()
+    try:
+        timeout = float(os.environ.get("RECAP_QWEN_TIMEOUT", "1800"))
+        if timeout <= 0 or not math.isfinite(timeout):
+            raise ValueError
+    except ValueError as e:
+        raise QwenUnavailable("RECAP_QWEN_TIMEOUT 은 양수(초)여야 합니다") from e
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", shell=False,
+                           errors="replace", timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired as e:
+        raise QwenUnavailable(f"로컬 TTS 합성이 {timeout:g}초 제한을 넘었습니다") from e
+    except OSError as e:
+        raise QwenUnavailable(f"로컬 TTS 실행 실패: {e}") from e
     if r.returncode != 0:
-        raise QwenUnavailable(f"synth_cli 실패({r.returncode}): {r.stderr[-800:]}")
+        raise QwenUnavailable(f"로컬 TTS 실패({r.returncode}): {r.stderr[-800:]}")
+    try:
+        wav = sf.info(str(out_wav))
+        if wav.frames <= 0 or wav.samplerate <= 0 or wav.channels < 1 or wav.format not in ("WAV", "WAVEX", "RF64"):
+            raise ValueError("비어 있거나 WAV 형식이 아닌 오디오")
+    except (RuntimeError, OSError, ValueError) as e:
+        raise QwenUnavailable(f"로컬 TTS 가 유효한 WAV 파일을 만들지 않았습니다: {out_wav}") from e
+    # Existing local commands need not print our metadata schema; measured WAV is authoritative.
+    info = {}
     lines = [ln for ln in r.stdout.splitlines() if ln.strip().startswith("{")]
-    if not lines:
-        raise QwenUnavailable(f"synth_cli 결과 JSON 없음: {r.stdout[-300:]} {r.stderr[-300:]}")
-    return json.loads(lines[-1])
+    if lines:
+        try:
+            parsed = json.loads(lines[-1])
+            if isinstance(parsed, dict):
+                info = parsed
+        except json.JSONDecodeError:
+            pass
+    return {"load_sec": info.get("load_sec"), "synth_sec": info.get("synth_sec", time.monotonic() - started),
+            "gpu_mem_peak_mb": info.get("gpu_mem_peak_mb"), "gpu": info.get("gpu"),
+            "gpu_name": info.get("gpu_name"), "model": info.get("model", request.get("model")),
+            "device": info.get("device"), "out": str(out_wav), "duration": wav.frames / wav.samplerate,
+            "sample_rate": wav.samplerate}
 
 
 def _cut_items(full_wav: Path, texts: list[str], spoken: list[str], out_dir: Path,
@@ -242,7 +336,11 @@ def synth_sentences(sentences: list[str], out_dir: str | Path, instruct: str | N
     """전체 내레이션을 한 번에 합성 -> 문장별로 자름 -> 받아쓰기로 확인(불일치면 seed+1 로 재합성, 최대 max_tries).
     반환: {items:[{text,spoken,wav,duration}], meta:{engine,instruct,seed,tries,attempts:[...],...}}
     items 는 tts.synth_sentences 와 같은 꼴이라 fit_rate·assemble 에 그대로 넘긴다."""
-    out = Path(out_dir)
+    if not sentences or any(not isinstance(t, str) or not t.strip() for t in sentences):
+        raise ValueError("합성할 문장은 비어 있을 수 없습니다")
+    if max_tries < 1:
+        raise ValueError("max_tries 는 1 이상이어야 합니다")
+    out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     instruct = DEFAULT_INSTRUCT if instruct is None else instruct
     seed = DEFAULT_SEED if seed is None else int(seed)

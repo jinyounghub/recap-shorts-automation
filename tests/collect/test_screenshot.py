@@ -1,14 +1,14 @@
-"""로컬 파일로 하는 브라우저 시험(인터넷 불필요, 설치된 Edge 필요)."""
+"""로컬 파일로 하는 브라우저 시험(인터넷 불필요, 헤드리스 Chromium 필요; RECAP_TEST_BROWSER=1로 실행)."""
 import json
 import os
 
 import pytest
 
 from recap_shorts.collect import screenshot as S
-from recap_shorts.collect.browser import EDGE_PATH
 from tests.collect.conftest import FIX
 
-pytestmark = pytest.mark.skipif(not os.path.exists(EDGE_PATH), reason="Edge 없음")
+browser_required = pytest.mark.skipif(os.environ.get("RECAP_TEST_BROWSER") != "1",
+                                      reason="RECAP_TEST_BROWSER=1과 준비된 헤드리스 브라우저 필요")
 
 
 def _page(tmp_path):
@@ -17,6 +17,7 @@ def _page(tmp_path):
     return p.as_uri()
 
 
+@browser_required
 def test_page_blur_and_manual_flag(tmp_path):
     url = _page(tmp_path)
     s1 = S.screenshot_page(url, tmp_path / "d.png", [".nick"])
@@ -28,6 +29,7 @@ def test_page_blur_and_manual_flag(tmp_path):
     assert s3.needs_manual_blur  # 선택자가 아무것도 못 찾으면 수동 흐림 필요
 
 
+@browser_required
 def test_ad_hide_counts_in_flags(tmp_path):
     shot = S.screenshot_page(_page(tmp_path), tmp_path / "g.png", [".nick"], ad_selectors=S.DEFAULT_AD_SELECTORS)
     assert shot.ads_hidden["iframe"] == 1 and shot.ads_hidden["ins.adsbygoogle"] == 1
@@ -38,6 +40,7 @@ def test_ad_hide_counts_in_flags(tmp_path):
     assert "ads_hidden" not in none.flags()
 
 
+@browser_required
 def test_ad_hide_actually_hides(tmp_path):
     from PIL import Image
     url = _page(tmp_path)
@@ -64,6 +67,7 @@ def test_site_config_placeholder_is_empty_and_dc_present():
     assert S.ad_selectors_for("https://x.example", S.CONFIG_SITES)  # 기본 광고 목록이 설정에 있음
 
 
+@browser_required
 def test_community_text_fallback_local(tmp_path):
     from recap_shorts.collect.community import community_text
     p = tmp_path / "t.html"

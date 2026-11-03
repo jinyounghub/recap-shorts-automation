@@ -1,0 +1,13 @@
+{
+  "qwen_command": [
+    "/ABSOLUTE/PATH/TO/EXISTING/VENV/bin/python",
+    "/ABSOLUTE/PATH/TO/EXISTING/tts_wrapper.py",
+    "--text-file",
+    "{text_file}",
+    "--output",
+    "{output}"
+  ],
+  "sensevoice_dir": null,
+  "supertonic_dir": null,
+  "browser_channel": null
+}

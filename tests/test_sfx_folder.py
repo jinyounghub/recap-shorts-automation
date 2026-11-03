@@ -77,8 +77,8 @@ def test_save_and_view_sfx_dirs(tmp_path):
     assert v["sfx"]["dirs"][0]["types"] == {"boom": 1, "pop": 1} and v["sfx"]["fill_missing"] is True
     settings.save(sfx={"fill_missing": False})
     assert settings.sfx_fill_missing() is False and settings.sfx_dirs() == [str(d.resolve())]   # 준 것만 바꾼다
-    settings.save({"gemini_api_key": "test-gemini-key-0000000000"})
-    assert settings.sfx_dirs() == [str(d.resolve())]            # 키를 저장해도 효과음 설정은 남는다
+    settings.save(image_engine="codex")
+    assert settings.sfx_dirs() == [str(d.resolve())]            # 다른 제작 설정을 저장해도 효과음 설정은 남는다
     v = settings.save(sfx={"dirs": []})
     assert settings.sfx_dirs() == [] and v["sfx"]["using"] == "default"
     assert [f["path"] for f in v["sfx"]["default"]] == load_config()["sfx"]["libraries"]

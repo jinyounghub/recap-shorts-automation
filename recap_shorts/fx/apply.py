@@ -191,7 +191,7 @@ def apply_fx(timeline: dict, timings: dict, job_dir: str | Path, cfg: dict, *, m
     texts = [s["text"] for s in timings["sentences"]]
     br = B.label_beats(texts, cache_path=job_dir / bcfg.get("cache", "fx/beats.json"),
                        use_llm=bcfg.get("use_llm", True) if use_llm is None else use_llm,
-                       model=bcfg.get("model", "gemini-3.8-flash"), llm=llm)
+                       model=bcfg.get("model"), llm=llm)
     report["beats"] = {"source": br["source"], "labels": br["beats"], "error": br.get("error")}
     sents = sentences_with_beats(timings, br)
 
@@ -209,7 +209,7 @@ def apply_fx(timeline: dict, timings: dict, job_dir: str | Path, cfg: dict, *, m
             fr = MF.fit_memes(sents, lib, M.eligible_indices(sents, mcfg, dur0), M.effective_max(lib, mcfg, dur0),
                               cache_path=job_dir / mcfg.get("fit_cache", "fx/meme_fit.json"),
                               use_llm=bcfg.get("use_llm", True) if use_llm is None else use_llm,
-                              model=mcfg.get("fit_model", bcfg.get("model", "gemini-3.8-flash")), llm=llm)
+                              model=mcfg.get("fit_model", bcfg.get("model")), llm=llm)
             fits = fr["picks"]
             report["meme_fit"] = {"source": fr["source"], "picks": fits, "error": fr.get("error")}
             if fr.get("error"):
@@ -324,6 +324,8 @@ def maybe_apply(job_dir: str | Path, timeline: dict, timings: dict, options: dic
     """pipeline.write_timeline 용. 꺼져 있으면 timeline 을 그대로 돌려준다. 어떤 오류도 파이프라인을 멈추지 않는다."""
     override = (options or {}).get("fx")
     cfg = load_config(config_path, override if isinstance(override, dict) else None)
+    if (options or {}).get("check_asr") is False:
+        cfg.setdefault("timing", {}).setdefault("word_cuts", {})["asr"] = "off"
     if not enabled(cfg, options):
         return with_intro(timeline, timings, cfg, job_dir)
     flag = _opt_flags(options)

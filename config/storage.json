@@ -1,4 +1,0 @@
-{
-  "_note": "끝난 작업을 구글 드라이브 데스크톱 앱의 '내 드라이브'로 옮길지. 기본은 꺼짐. 켜려면 enabled 를 true 로(이 PC 에서만 켜려면 같은 꼴의 config/storage.local.json 을 만든다 — gitignore). root=auto 는 G:\\내 드라이브 → 그 밖의 '내 드라이브'/'My Drive' 폴더 순으로 찾는다. delete_local=true 면 양쪽 파일의 SHA-256 이 모두 같을 때만 로컬 폴더를 지운다.",
-  "archive": {"enabled": false, "root": "auto", "folder": "recap-shorts-보관", "delete_local": true}
-}

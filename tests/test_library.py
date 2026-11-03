@@ -1,4 +1,4 @@
-"""효과음·짤 폴더 분석(fx/library.py, analyze_sfx.py, analyze_meme.py) — Gemini 대신 가짜 답(llm=)으로 끝까지 돌린다.
+"""효과음·짤 폴더 분석(fx/library.py, analyze_sfx.py, analyze_meme.py) — Codex 대신 가짜 답(llm=)으로 끝까지 돌린다.
 꾸러미 자리는 시험마다 임시 폴더(RECAP_LIBRARY_DIR), 설정 파일도 임시(tests/conftest.py)."""
 import json
 import re
@@ -141,11 +141,11 @@ def test_sfx_reanalysis_reuses_results_and_keeps_human_changes(tmp_path):
     assert {it["key"]: it for it in d["items"]}["a.wav"]["keep"]
 
 
-def test_sfx_without_gemini_uses_file_names_only(tmp_path):
+def test_sfx_without_audio_model_uses_local_metadata(tmp_path):
     src = sfx_folder(tmp_path)
     tone(src / "whoosh-sound-effect.wav")             # 규칙이 안 쓰는 종류 이름(내려받은 파일 이름에 흔함)
-    s = L.start("sfx", str(src), wait=True)          # 시험 중이라 Gemini 를 부르지 않는다 = 키 없음과 같음
-    assert s["state"] == "done" and not s["listened"] and "이름으로만" in s["message"]
+    s = L.start("sfx", str(src), wait=True)          # 시험 중이라 Codex 를 부르지 않는다 = 키 없음과 같음
+    assert s["state"] == "done" and not s["listened"] and "로컬 측정값" in s["message"]
     d = L.detail(L.get("sfx", s["id"]))
     kept = [it["key"] for it in d["items"] if it["keep"]]
     assert kept == ["pop_01.wav"]
@@ -238,7 +238,7 @@ def test_meme_analysis_writes_meanings_and_filters(tmp_path):
 
 def test_meme_human_edits_and_name_fallback(tmp_path):
     src = meme_folder(tmp_path)
-    s = L.start("meme", str(src), wait=True)          # Gemini 없음 → 파일 이름이 뜻
+    s = L.start("meme", str(src), wait=True)          # Codex 없음 → 파일 이름이 뜻
     d = L.detail(L.get("meme", s["id"]))
     by = {it["key"]: it for it in d["items"]}
     assert not s["listened"] and by["물음표_개구리.png"]["meaning"] == "물음표 개구리"

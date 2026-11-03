@@ -1,11 +1,9 @@
-"""커뮤니티 글(사용자가 준 주소) 본문을 Markdown으로. Crawl4AI(설치된 Edge) -> 안 되면 trafilatura+Playwright 렌더.
+"""커뮤니티 글(사용자가 준 주소) 본문을 Markdown으로. trafilatura + 헤드리스 Playwright 렌더.
 
 작성자·닉네임으로 보이는 줄은 지우지 않고 그대로 둔다. 결과 파일은 work/ 아래에만 쓴다.
 """
 from __future__ import annotations
 
-import asyncio
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,26 +14,7 @@ from .http import USER_AGENT, Blocked, BlockedError, HttpClient
 class CommunityText:
     path: Path
     markdown: str
-    engine: str  # crawl4ai | trafilatura+playwright
-
-
-def _crawl4ai_markdown(url: str, base_dir: Path) -> str:
-    os.environ.setdefault("CRAWL4AI_NO_CLOUD_NOTICE", "1")
-    os.environ.setdefault("CRAWL4_AI_BASE_DIRECTORY", str(base_dir))  # 캐시·DB도 work/ 아래
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
-
-    async def run():
-        # 기본 UA가 가짜 브라우저 UA라서 정직한 UA로 덮어씀. 새 Chromium 대신 설치된 Edge 사용.
-        bc = BrowserConfig(headless=True, verbose=False, user_agent=USER_AGENT + " browser",
-                           chrome_channel="msedge", channel="msedge")
-        rc = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, verbose=False)
-        async with AsyncWebCrawler(config=bc) as c:
-            r = await c.arun(url, config=rc)
-        if not r.success:
-            raise RuntimeError(r.error_message or "crawl4ai 실패")
-        return str(r.markdown or "")
-
-    return asyncio.run(run())
+    engine: str  # trafilatura+playwright
 
 
 def _fallback_markdown(url: str) -> str:
@@ -59,21 +38,15 @@ def _fallback_markdown(url: str) -> str:
 
 def community_text(url: str, out_md: Path | str, client: HttpClient | None = None,
                    engine: str = "auto") -> CommunityText:
-    """robots 확인·3초 간격 후 본문을 Markdown 파일로 저장. engine: auto | crawl4ai | fallback"""
+    """robots 확인·3초 간격 후 본문을 Markdown 파일로 저장. engine: auto | fallback"""
     out_md = Path(out_md)
     out_md.parent.mkdir(parents=True, exist_ok=True)
     if client is not None:
         if not client.robots_allowed(url):
             raise BlockedError(Blocked(url, "robots"))
         client.wait_turn(url)
-    md, used = "", ""
-    if engine in ("auto", "crawl4ai"):
-        try:
-            md, used = _crawl4ai_markdown(url, out_md.parent / ".crawl4ai"), "crawl4ai"
-        except Exception:
-            if engine == "crawl4ai":
-                raise
-    if not md.strip() and engine in ("auto", "fallback"):
-        md, used = _fallback_markdown(url), "trafilatura+playwright"
+    if engine not in ("auto", "fallback"):
+        raise ValueError("본문 수집 엔진은 auto 또는 fallback 입니다")
+    md, used = _fallback_markdown(url), "trafilatura+playwright"
     out_md.write_text(md, encoding="utf-8")
     return CommunityText(out_md, md, used)

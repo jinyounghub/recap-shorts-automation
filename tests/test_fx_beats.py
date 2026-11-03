@@ -1,3 +1,5 @@
+import pytest
+
 from recap_shorts.fx import beats as B
 from recap_shorts.fx.config import BEAT_LABELS
 
@@ -70,3 +72,21 @@ def test_llm_exception_falls_back_without_raising(tmp_path):
 def test_prompt_mentions_all_sentences_and_labels():
     p = B.build_prompt(TEXTS)
     assert all(t in p for t in TEXTS) and all(label in p for label in BEAT_LABELS)
+
+
+@pytest.mark.parametrize("model", [None, "gemini-3.8-flash"])
+def test_default_provider_is_codex_and_legacy_model_uses_current_config(monkeypatch, model):
+    from recap_shorts.llm import codex
+
+    calls = []
+
+    def generate(prompt, **kwargs):
+        calls.append(kwargs)
+        return {"beats": ["shock"] * len(TEXTS)}
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("RECAP_FX_NO_LLM", raising=False)
+    monkeypatch.setattr(codex, "generate_text", generate)
+    result = B.label_beats(TEXTS, model=model)
+    assert result["source"] == "llm" and result["beats"] == ["shock"] * len(TEXTS)
+    assert len(calls) == 1 and calls[0]["model"] is None

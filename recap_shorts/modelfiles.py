@@ -34,7 +34,7 @@ MODELS = [
      "size": 128_774_318,
      "files": ["tts.json", "voice.bin", "unicode_indexer.bin", "duration_predictor.int8.onnx",
                "text_encoder.int8.onnx", "vector_estimator.int8.onnx", "vocoder.int8.onnx"],
-     "label": "로컬 목소리(Supertonic)", "missing_effect": "없으면 로컬 목소리 엔진만 못 씁니다(기본은 Gemini 목소리)",
+     "label": "로컬 목소리(Supertonic)", "missing_effect": "기존 Supertonic 엔진을 선택할 때만 필요합니다(기본은 기존 Qwen 명령)",
      "env": "RECAP_SUPERTONIC_DIR"},
 ]
 

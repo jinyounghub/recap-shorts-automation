@@ -136,6 +136,40 @@ def test_off_is_the_old_equal_split(voice):
     assert WC.from_options(wav.parent, timings, {"fx": {"timing": {"cuts_at_word_gaps": False}}}) is None
 
 
+@pytest.mark.parametrize("stage", ["timeline", "fx"])
+def test_no_asr_option_prevents_model_calls_for_scene_and_fx_cuts(voice, tmp_path, monkeypatch, stage):
+    """Installed ASR must remain unused after a job is created with --no-asr."""
+    from recap_shorts.voice import asr
+    wav, timings = voice
+    job = tmp_path / "job"
+    (job / "voice").mkdir(parents=True)
+    (job / "voice" / "voice.wav").write_bytes(wav.read_bytes())
+    calls = []
+    monkeypatch.delenv("RECAP_WORDCUTS_ASR", raising=False)
+    monkeypatch.setattr(asr, "available", lambda: True)
+    monkeypatch.setattr(asr, "transcribe_timed", lambda x, sr: calls.append(len(x)) or
+                        {"text": "가", "tokens": ["가"], "ts": [0.1]})
+    options = {"check_asr": False, "fx": {"enabled": True, "beats": {"use_llm": False},
+               "memes": {"enabled": True, "library": str(tmp_path / "no-meme-library")},
+               "sfx": {"enabled": False}, "intro": {"enabled": False},
+               "timing": {"word_cuts": {"asr": "auto"}}}}
+
+    def run():
+        if stage == "timeline":
+            assert WC.from_options(job, timings, options) is not None
+        else:
+            result = A.maybe_apply(job, build(timings, plan()), timings, options)
+            assert "beats" in result["fx"] and "error" not in result["fx"]
+
+    run()
+    assert calls == []
+    assert not (job / WC.SIDECAR).exists()
+    options["check_asr"] = True
+    run()
+    assert len(calls) == len(timings["sentences"])
+    assert (job / WC.SIDECAR).is_file()
+
+
 def test_too_short_sentence_falls_back_to_equal_split(tmp_path):
     wav, timings = synth(tmp_path, [("hook", HOOK), ("body", [("가나다", 3), ("라마바", 3)]), ("body", S2)])
     wc = WC.WordCuts(timings["sentences"], WC.load_energy(wav), None, DELAY, None)
