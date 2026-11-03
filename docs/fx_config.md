@@ -19,7 +19,7 @@
 
 1. **분위기 라벨(beats)** — `recap_shorts/fx/beats.py`. 문장마다 라벨 하나:
    `shock funny sad angry smug awkward reveal question conclusion neutral`.
-   영상 한 편에 Gemini 텍스트 호출 1번(`beats.model`, 기본 `gemini-3.8-flash`). 길이가 다르거나 호출 실패·키 없음이면 규칙(물음표→question, `ㄷㄷ/실화/충격…`→shock, 마지막 문장→conclusion, 그 외 neutral)으로 대신하고, 모르는 라벨 한 칸만 틀리면 그 칸만 규칙 값으로 채운다. 결과는 작업 폴더 `fx/beats.json` 에 저장 — 문장이 같으면 다시 부르지 않는다(실패한 기록도 다시 부르지 않음. 다시 하려면 파일을 지운다).
+   영상 한 편에 Codex 텍스트 호출 1번(`beats.model`, 기본 `null` (현재 Codex 모델)). 길이가 다르거나 호출 실패·로그인 없음이면 규칙(물음표→question, `ㄷㄷ/실화/충격…`→shock, 마지막 문장→conclusion, 그 외 neutral)으로 대신하고, 모르는 라벨 한 칸만 틀리면 그 칸만 규칙 값으로 채운다. 결과는 작업 폴더 `fx/beats.json` 에 저장 — 문장이 같으면 다시 부르지 않는다(실패한 기록도 다시 부르지 않음. 다시 하려면 파일을 지운다).
 2. **짤 고르기** — `fx/memes.py`(+ `pick_by: "fit"` 이면 `fx/meme_fit.py`).
 3. **효과음 놓기** — `fx/sfx.py`.
 4. 타임라인에 `overlays`, `audio.sfx`, (전체화면 짤이면) `kind:"meme"` 샷, 기록용 `fx` 를 덧붙인다 — `fx/apply.py`.
@@ -29,15 +29,15 @@
 ### beats
 | 키 | 기본값 | 뜻 |
 |---|---|---|
-| `use_llm` | `true` | false 면 Gemini 를 부르지 않고 규칙만 |
-| `model` | `gemini-3.8-flash` | 텍스트 모델 |
+| `use_llm` | `true` | false 면 Codex 를 부르지 않고 규칙만 |
+| `model` | `null` (현재 Codex 모델) | 텍스트 모델 |
 | `cache` | `fx/beats.json` | 작업 폴더 안 저장 위치 |
 
 ### memes
 | 키 | 기본값 | 뜻 |
 |---|---|---|
 | `enabled` | `true` | 짤 켜기 |
-| `library` | `assets_local/memes_r` | 기본 짤 폴더(저장소 루트 기준 또는 절대경로). `manifest.json` 필요. **설정 화면 '짤'에서 폴더를 고르면 그 폴더들이 먼저**(`config/settings.local.json` 의 `memes.dirs`, 분석한 꾸러미 또는 manifest 가 있는 폴더, manifest 없는 폴더는 파일 이름을 뜻으로) |
+| `library` | `assets_local/memes_r` | 기본 짤 폴더(저장소 루트 기준 또는 절대경로). `manifest.json` 필요. **`config/settings.local.json`의 `memes.dirs`에 폴더를 지정하면 그 폴더들이 먼저**(`config/settings.local.json` 의 `memes.dirs`, 분석한 꾸러미 또는 manifest 가 있는 폴더, manifest 없는 폴더는 파일 이름을 뜻으로) |
 | `position` | `"end"` | `"end"` = 그 문장이 끝나는 쪽(다음 문장 시작, 마지막 문장이면 영상 끝)에 반응으로. `"start"` = 문장 시작 |
 | `min_before_s` | `0.6` | `position: "end"` 에서 문장 시작 뒤 이만큼보다 앞으로는 안 간다 |
 | `max_per_video` | `2` | 한 편에 넣을 최대 개수(길이표가 없을 때) |
@@ -52,7 +52,7 @@
 | `end_with_meme` | `false` | 마지막 본문 문장에 `conclusion` 짤 1개(라이브러리에 없으면 note 만 남기고 건너뜀) |
 | `prefer_transparent` | `true` | 투명 배경 짤을 스티커로 먼저 |
 | `avoid_same_family_twice_in_a_row` | `true` | 가까운 시각에 같은 계열 연속 피하기 |
-| `pick_by` | `"fit"` | `"fit"` = 문장 전체와 짤의 뜻(`manifest` 의 `meaning`)을 Gemini 가 함께 보고 반응이 자연스러운 문장에만 고른다(영상당 1회, 결과 `fx/meme_fit.json`. 어울리는 곳이 없거나 호출이 실패하면 짤 없이 감). `"beats"` = 분위기 라벨로 고르기 |
+| `pick_by` | `"fit"` | `"fit"` = 문장 전체와 짤의 뜻(`manifest` 의 `meaning`)을 Codex 가 함께 보고 반응이 자연스러운 문장에만 고른다(영상당 1회, 결과 `fx/meme_fit.json`. 어울리는 곳이 없거나 호출이 실패하면 짤 없이 감). `"beats"` = 분위기 라벨로 고르기 |
 | `full_shot_ratio` | `1.0` | 뽑힌 짤 중 전체화면 샷으로 쓸 비율(0=전부 스티커, 0.25=네 번째마다) |
 | `full_shot_len_s` / `full_shot_min_s` / `full_shot_max_s` | `1.2` / `0.6` / `2.0` | 전체화면 짤 길이(문장 끝을 넘지 않음) |
 | `full_shot_bg` | `[255, 255, 255]` | 전체화면 짤 배경색 RGB |
@@ -83,7 +83,7 @@
 | 키 | 기본값 | 뜻 |
 |---|---|---|
 | `enabled` | `true` | 효과음 켜기 |
-| `libraries` | `["assets/sfx_packs/user_meme", "assets/sfx_packs/chime"]` | 기본 효과음 폴더들(저장소에 같이 든 꾸러미, `assets/sfx_packs/README.md`). manifest 에 `source`·`license` 를 적는다. **설정 화면 '효과음'에서 폴더를 고르면 그 폴더가 먼저**(`config/settings.local.json` 의 `sfx.dirs`, 없는 종류는 `sfx.fill_missing` 이 켜져 있으면 여기서 채움). 비어 있으면 `fallback_libraries` → 저장소 합성음(`assets/sfx`) 순서로 찾고, 그것도 없으면 건너뛴다 |
+| `libraries` | `["assets/sfx_packs/user_meme", "assets/sfx_packs/chime"]` | 기본 효과음 폴더들(저장소에 같이 든 꾸러미, `assets/sfx_packs/README.md`). manifest 에 `source`·`license` 를 적는다. **로컬 설정의 효과음 폴더에서 폴더를 고르면 그 폴더가 먼저**(`config/settings.local.json` 의 `sfx.dirs`, 없는 종류는 `sfx.fill_missing` 이 켜져 있으면 여기서 채움). 비어 있으면 `fallback_libraries` → 저장소 합성음(`assets/sfx`) 순서로 찾고, 그것도 없으면 건너뛴다 |
 | `fallback_libraries` | `[]` | 설정한 꾸러미가 없는 PC 에서 대신 쓸 폴더 |
 | `min_gap_s` | `0.5` | 효과음 시작 사이 최소 간격. 겹치면 우선순위(끝 > 짤 > 훅 > 분위기 > 컷)로 남긴다 |
 | `max_per_video` | `24` | 최대 개수(우선순위 낮은 것부터 버림). 인트로·끝 소리는 이 상한 밖 |
@@ -128,11 +128,11 @@ manifest 가 없는 폴더(설정 화면에서 고른 내 폴더)는 바로 아�
 
 ### analyze (효과음·짤 폴더 분석)
 
-설정 화면 '효과음'·'짤'에서 폴더를 고르면 Gemini 가 듣거나 보고 매겨 꾸러미를 만든다. 흐름·화면·REST 는 `docs/library_analysis.md`.
+폴더 분석은 Python 함수 `recap_shorts.fx.library`를 사용한다. 짤 이미지의 시각 분석은 Codex 비전을 사용하고, 효과음은 기존 manifest·파일명·로컬 음향 측정값으로 분류한다. Codex 텍스트/비전에 오디오를 보내 청취했다고 표시하지 않는다. GUI·REST 서버는 사용하지 않는다.
 
 | 키 | 기본값 | 뜻 |
 |---|---|---|
-| `model` | `gemini-3.8-flash` | 듣기·보기에 쓰는 모델(6개씩 한 요청, 동시에 4요청) |
+| `model` | `null` (현재 Codex 모델) | 짤 비전 분석용 Codex 모델. null이면 현재 사용자 설정을 계승하며 효과음 청취에는 사용하지 않음 |
 | `sfx.max_files` | `800` | 폴더에서 볼 소리 파일 수(하위 폴더 두 단계까지) |
 | `sfx.max_file_s` | `40` | 이보다 긴 파일은 효과음이 아니라고 보고 듣지 않는다 |
 | `sfx.listen_s` | `6` | 소리 시작부터 들려줄 길이 |
@@ -219,4 +219,4 @@ manifest 가 없는 폴더(설정 화면에서 고른 내 폴더)는 바로 아�
 - **목소리 지연**: 그림·자막은 말보다 `picture_lead_s`(0.2초) 먼저 바뀌게 목소리를 늦춰 붙이므로, 컷 시각은 어절 경계 + 지연이다(`word_cuts.lead_s` 0 = 경계에서 바로). 지연을 빼 먹으면 컷이 앞 어절의 끝 음절 안으로 0.2초 일찍 들어간다. `fx.apply.picture_lead(cfg, options)` 가 실제로 지연이 붙을지(fx 꺼짐·짤/효과음 둘 다 꺼짐이면 0)를 알려 준다.
 - **자막 카드**: 고른 컷 자리에서 카드도 반드시 끊기고 같은 시각에 바뀐다(`render/captions.make_cards` 의 `breaks`); 카드 안 시각은 컷 사이 구간마다 따로 음절 비율로 나눈다.
 - **짤 앞 다시 나누기**: `fit_before_meme(..., word_cuts=)` 가 같은 규칙을 쓴다. 문장 끝 짤(전체화면 샷)의 시작도 그림이 바뀌는 자리라서 `snap_meme_start` 가 가까운 어절 경계로(`word_cuts.snap_meme_s` 0.4초 안, 0 이면 안 옮김) 옮기고, 효과음은 옮긴 시작을 따른다.
-- 환경변수 `RECAP_WORDCUTS_ASR=off` 는 받아쓰기를 끈다(시험용). 시험 중(`PYTEST_CURRENT_TEST`)이거나 `RECAP_FX_NO_LLM` 이 있으면 Gemini 를 부르지 않고 규칙 라벨만 쓴다.
+- 환경변수 `RECAP_WORDCUTS_ASR=off` 는 받아쓰기를 끈다(시험용). 시험 중(`PYTEST_CURRENT_TEST`)이거나 `RECAP_FX_NO_LLM` 이 있으면 Codex 를 부르지 않고 규칙 라벨만 쓴다.

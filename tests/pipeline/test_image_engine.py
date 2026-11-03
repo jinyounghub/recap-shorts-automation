@@ -1,144 +1,105 @@
-"""AI 그림 엔진(image_engine) 고르기 시험: 로컬 서버 켜짐/꺼짐 × Gemini 키 있음/없음 — 네트워크 없이."""
-import requests
+"""Native imagegen handoff validates actual files without an HTTP fallback."""
+import json
+from pathlib import Path
+
 import pytest
+from PIL import Image
 
-from recap_shorts import settings
-from recap_shorts.images import provider
-
-
-class Resp:
-    def __init__(self, status=200, content=b"", text=""):
-        self.status_code, self.content, self.text = status, content, text
+from recap_shorts.images import codex_imagegen as native, provider
 
 
-@pytest.fixture(autouse=True)
-def _clean(monkeypatch):
-    provider._limit_until[0] = 0.0
-    provider._PROBE.update(at=0.0, up=False)
-    monkeypatch.setattr(provider, "FALLBACK", "gemini")
-    yield
-    provider._limit_until[0] = 0.0
-    provider._PROBE.update(at=0.0, up=False)
+def png(path, color=(80, 120, 160), size=(640, 480)):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, color).save(path)
 
 
-def server(up: bool):
-    def get(*a, **k):
-        if not up:
-            raise requests.ConnectionError()
-        return Resp(200)
-    return get
+def test_missing_file_creates_stable_task_without_network(tmp_path, monkeypatch):
+    import requests
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("network image fallback"))
+    monkeypatch.setenv("RECAP_GEMINI_API_KEY", "obsolete-key-must-not-be-read")
+    monkeypatch.setenv("RECAP_IMAGE_FALLBACK", "gemini")
+    out = tmp_path / "assets" / "ai" / "ai_01.png"
+    result = provider.generate("A Korean street", out)
+    assert not result["ok"] and result["pending"]
+    assert not out.exists()
+    path = Path(result["manifest"])
+    before = path.read_bytes()
+    again = provider.generate("A Korean street", out)
+    assert again["pending"] and path.read_bytes() == before
+    task = json.loads(before)["tasks"][0]
+    assert task["output"] == "ai/ai_01.png"
+    assert task["prompt"] == "A Korean street"
+    assert task["prompt_sha256"] == native.digest(task["prompt"])
+    assert provider.engine_status()[1] == "codex"
 
 
-def gemini_result(monkeypatch, calls):
-    def fake(prompt, out_png, aspect="landscape", **kw):
-        calls.append((prompt, str(out_png), aspect))
-        return {"ok": True, "file": str(out_png), "seconds": 0.0, "error": None, "engine": "gemini"}
-    monkeypatch.setattr("recap_shorts.images.gemini_image.generate", fake)
+def test_resume_accepts_decodable_native_file(tmp_path):
+    out = tmp_path / "a.png"
+    provider.generate("first scene", out)
+    png(out)
+    result = provider.generate("first scene", out)
+    assert result["ok"] and not result["pending"]
+    assert result["size"] == [640, 480]
+    assert result["sha256"] == native.file_digest(out)
+    assert native.current("first scene", out)
+    png(out, color=(50, 60, 70))
+    assert not native.current("first scene", out)
+    assert provider.generate("first scene", out)["sha256"] == native.file_digest(out)
+    assert native.current("first scene", out)
 
 
-@pytest.mark.parametrize("engine,up,key,avail,mode", [
-    ("local", True, False, True, "local"),
-    ("local", False, False, False, "local"),
-    ("local", False, True, False, "local"),
-    ("gemini", True, True, True, "gemini"),
-    ("gemini", True, False, False, "gemini"),
-    ("off", True, True, False, "off"),
-])
-def test_available_and_engine_status(monkeypatch, engine, up, key, avail, mode):
-    monkeypatch.setattr(requests, "get", server(up))
-    settings.save({}, engine)
-    if key:
-        settings.save({"gemini_api_key": "test-gemini-key-0000000000"})
-    assert provider.available() is avail
-    assert provider.engine() == mode
-    ok, used, detail = provider.engine_status()
-    assert used == mode and ok is avail
-    assert detail == {"local": "로컬 이미지 서버로 만듦", "gemini": "Gemini 이미지로 만듦",
-                      "off": "AI 그림 꺼짐 — 캡처 카드만"}[mode]
+def test_changed_prompt_rejects_previous_bytes(tmp_path):
+    out = tmp_path / "a.png"
+    provider.generate("first scene", out)
+    png(out)
+    assert provider.generate("first scene", out)["ok"]
+    stale = provider.generate("different scene", out)
+    assert stale["status"] == "stale" and stale["pending"]
+    assert provider.generate("different scene", out)["status"] == "stale"
+    png(out, color=(200, 80, 20))
+    assert provider.generate("different scene", out)["ok"]
+    assert not native.current("first scene", out)
+    assert native.current("different scene", out)
 
 
-def test_default_engine_is_gemini_even_with_server_up(monkeypatch, tmp_path):
-    """고른 적이 없으면 Gemini — 로컬 서버가 켜져 있어도 그쪽으로 가지 않는다(예전 '자동'은 뺐다)."""
-    calls = []
-    gemini_result(monkeypatch, calls)
-    monkeypatch.setattr(requests, "get", server(True))
-    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("로컬 서버로 가면 안 됨")))
-    settings.save({"gemini_api_key": "test-gemini-key-0000000000"})
-    assert settings.image_engine() == "gemini" and provider.engine() == "gemini"
-    r = provider.generate("scene", tmp_path / "a.png")
-    assert r["ok"] and calls == [("scene", str(tmp_path / "a.png"), "landscape")]
+def test_preexisting_unregistered_image_is_not_claimed_as_generated(tmp_path):
+    out = tmp_path / "old.png"
+    png(out)
+    assert provider.generate("new native scene", out)["status"] == "stale"
 
 
-def test_generate_gemini_engine_ignores_local_server(monkeypatch, tmp_path):
-    calls = []
-    gemini_result(monkeypatch, calls)
-    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("로컬 서버로 가면 안 됨")))
-    settings.save({"gemini_api_key": "test-gemini-key-0000000000"}, "gemini")
-    assert provider.generate("scene", tmp_path / "b.png")["ok"] and calls
+@pytest.mark.parametrize("kind", ["corrupt", "small", "portrait", "jpeg"])
+def test_invalid_image_keeps_task_pending(tmp_path, kind):
+    out = tmp_path / "a.png"
+    provider.generate("scene", out)
+    if kind == "corrupt":
+        out.write_bytes(b"not an image")
+    elif kind == "small":
+        png(out, size=(32, 24))
+    elif kind == "portrait":
+        png(out, size=(480, 640))
+    else:
+        Image.new("RGB", (640, 480)).save(out, format="JPEG")
+    result = provider.generate("scene", out)
+    assert result["pending"] and result["status"] == "invalid"
+    assert not native.current("scene", out)
 
 
-def test_generate_off_makes_nothing(monkeypatch, tmp_path):
-    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("부르면 안 됨")))
-    settings.save({}, "off")
-    r = provider.generate("scene", tmp_path / "c.png")
-    assert not r["ok"] and "off" in r["error"] and not (tmp_path / "c.png").exists()
+def test_parallel_registration_preserves_all_tasks(tmp_path):
+    items = [{"prompt": f"scene {i}", "out": tmp_path / "assets" / "ai" / f"ai_{i}.png"} for i in range(5)]
+    results = provider.generate_many(items)
+    assert all(r["pending"] for r in results)
+    doc = json.loads(Path(results[0]["manifest"]).read_text())
+    assert len(doc["tasks"]) == 5
+    native.retain_outputs(Path(results[0]["manifest"]), [items[0]["out"]])
+    assert len(json.loads(Path(results[0]["manifest"]).read_text())["tasks"]) == 1
 
 
-def test_generate_local_engine_uses_server(monkeypatch, tmp_path):
-    from tests.pipeline.fakes import png as mk
-    mk(tmp_path / "src.png")
-    data = (tmp_path / "src.png").read_bytes()
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp(200, content=data))
-    settings.save({}, "local")
-    r = provider.generate("scene", tmp_path / "d.png")
-    assert r["ok"] and (tmp_path / "d.png").read_bytes() == data
-
-
-def test_usage_limit_falls_back_to_gemini(monkeypatch, tmp_path):
-    calls = []
-    gemini_result(monkeypatch, calls)
-
-    def post(url, json=None, timeout=None):
-        return Resp(400, text='{"error": "usage_limit_reached"}')
-    monkeypatch.setattr(requests, "get", server(True))
-    monkeypatch.setattr(requests, "post", post)
-    settings.save({}, "local")
-    r = provider.generate("scene", tmp_path / "f.png")
-    assert r["ok"] and r.get("fallback_from") and calls
-    assert provider._limit_until[0] > 0                 # 다음 장은 로컬 서버를 건너뛴다
-    calls.clear()
-    assert provider.generate("scene2", tmp_path / "g.png")["ok"] and calls
-
-
-def test_local_server_up_is_cached(monkeypatch):
-    hits = {"n": 0}
-
-    def get(*a, **k):
-        hits["n"] += 1
-        return Resp(200)
-    monkeypatch.setattr(requests, "get", get)
-    assert provider.local_server_up() is True and provider.local_server_up() is True
-    assert hits["n"] == 1
-    provider._PROBE["at"] = 0.0                          # 60초 지난 것으로
-    assert provider.local_server_up() is True and hits["n"] == 2
-
-
-def test_legacy_base_url_ignores_engine(monkeypatch, tmp_path):
-    from tests.pipeline.fakes import png as mk
-    mk(tmp_path / "src.png")
-    data = (tmp_path / "src.png").read_bytes()
-    seen = {}
-
-    def post(url, json=None, timeout=None):
-        seen["url"] = url
-        return Resp(200, content=data)
-    monkeypatch.setattr(requests, "post", post)
-    settings.save({}, "off")                            # off 여도 base_url 을 주면 로컬 서버(예전 동작)
-    assert provider.generate("p", tmp_path / "h.png", base_url="http://127.0.0.1:9999")["ok"]
-    assert seen["url"].startswith("http://127.0.0.1:9999/")
-
-
-def test_local_url_reads_env_at_call_time(monkeypatch):
-    monkeypatch.setenv("RECAP_IMAGE_URL", "http://127.0.0.1:1234")
-    assert provider.local_url() == "http://127.0.0.1:1234"
-    assert settings.public_view()["image_server"]["url"] == "http://127.0.0.1:1234"
+def test_off_creates_no_task_or_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("RECAP_IMAGE_ENGINE", "off")
+    out = tmp_path / "a.png"
+    result = provider.generate("scene", out)
+    assert not result["ok"] and not result["pending"]
+    assert not provider.available()
+    assert not out.exists() and not native.manifest_path(out).exists()

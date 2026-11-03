@@ -1,18 +1,14 @@
-"""이미 만든 소재 표시(중복 소재) — 주제 찾기 목록의 글이 전에 만든 글인지 알려 준다.
+"""로컬 work/<id>/state.json 에서 이미 제작한 소재를 찾는다.
 
-배경: 유튜브 독창성 기준이 강해진 뒤로 같은 소재를 또 만드는 일을 피하는 게 더 중요해졌다. 같은 글이 여러 번 만들어진 적도 있다.
-
-색인 = 로컬 work/<id>/state.json + 구글 드라이브로 옮긴 job(work/_archive.json 의 state 요약).
-  - 드라이브가 꺼져 있어도 된다: 색인 요약만으로 글 번호·제목은 알 수 있고, 원본 주소(post/post_<번호>.json 의 origin_url)는
-    드라이브 폴더가 실제로 있을 때만 읽는다.
+외부 보관 색인이나 경로를 검색하지 않는다. 글의 원본 주소도 해당 작업 폴더의
+post/post_<번호>.json 에서만 읽는다.
   - 목록 글과 견주는 방법(좋은 순서):
       same_post     같은 갤러리·같은 글 번호                     → "만든 적 있음"
       same_original 원본 갤러리 글(origin_url)이 같음             → 목록에는 원본 주소가 없어서 주소를 아는 때만(아래 match 의 origin_url)
       similar       제목을 정리한 뒤 글자 2개 묶음(bigram) 겹침이 SIMILAR_THRESHOLD 이상 → "비슷한 이야기 만듦"
   - 제목 정리: [싱갤] 같은 앞 태그, 싱글벙글·와들와들 같은 말머리, .jpg·.manhwa 같은 파일 꼬리표, ㅋㅋ·ㄷㄷ 같은 자음 웃음, 문장부호를 뺀다.
 
-한계: 다른 채널이 이미 같은 이야기를 올렸는지는 알 수 없다 — 유튜브 검색은 robots.txt 가 막고 있고 YouTube API 키도 없다.
-이 표시는 '우리가 이미 만든 것'만 안다. 같은 이야기를 다른 말로 쓴 글(제목이 전혀 다른 경우)도 못 잡는다.
+다른 채널의 영상은 검색하지 않는다. 제목이 전혀 다른 재작성 글은 놓칠 수 있다.
 """
 from __future__ import annotations
 
@@ -95,7 +91,6 @@ class MadeJob:
     source_title: str          # 원본 글 제목(태그 없이 저장된 것)
     our_title: str             # 우리가 붙인 영상 제목
     created_at: str
-    archived: bool             # 구글 드라이브로 옮겨짐
     finished: bool             # 영상 만들기(render)까지 끝남 — 아니면 중간에 멈춘 작업
     status: str
     origin_url: str = ""       # 실시간 베스트 글이 퍼온 원본 갤러리 글(post/post_<번호>.json). 모르면 ""
@@ -152,7 +147,7 @@ class MadeIndex:
     def match(self, gallery: str, no, title: str, origin_url: str | None = None,
               threshold: float = SIMILAR_THRESHOLD, site: str = "") -> dict | None:
         """목록 글 하나의 '만든 적 있음' 표시. 없으면 None.
-        {kind: same_post|same_original|similar, job_id, our_title, created_at, score, count, finished, archived}
+        {kind: same_post|same_original|similar, job_id, our_title, created_at, score, count, finished}
         count = 같은 글로 만든 job 수(same_post·same_original 일 때), 대표 job 은 가장 최근 것.
         site 를 주면 같은 글 번호라도 그 사이트 글만 같은 글로 본다(블라인드 별칭이 우연히 겹칠 수 있음)."""
         same = [j for j in self.same_post(gallery, no) if not site or j.site == site]
@@ -170,7 +165,7 @@ class MadeIndex:
 
 def _view(kind: str, j: MadeJob, score: float, count: int) -> dict:
     return {"kind": kind, "job_id": j.job_id, "our_title": j.our_title, "source_title": j.source_title, "created_at": j.created_at,
-            "score": score, "count": count, "finished": j.finished, "archived": j.archived}
+            "score": score, "count": count, "finished": j.finished}
 
 
 # ---------------------------------------------------------------- work/ 에서 색인 만들기
@@ -181,23 +176,25 @@ def _read_json(p: Path):
         return None
 
 
-def _origin_from(job_dir: Path | None, no) -> str:
-    """job 폴더의 post/post_<번호>.json 에서 원본 주소를 읽는다. 폴더가 없거나(드라이브 꺼짐) 파일이 없으면 ""."""
-    if job_dir is None:
-        return ""
+def _origin_from(job_dir: Path, no) -> str:
+    """작업 내부의 post/post_<번호>.json 에서만 원본 주소를 읽는다."""
     try:
         d = job_dir / "post"
-        post = _read_json(d / f"post_{no}.json")
+        if d.is_symlink():
+            return ""
+        candidate = d / f"post_{no}.json"
+        if candidate.is_symlink() or job_dir.resolve() not in candidate.resolve().parents:
+            return ""
+        post = _read_json(candidate)
         if post is None:                       # 번호가 달라진 경우를 대비해 폴더의 첫 post_*.json
-            first = next(iter(sorted(d.glob("post_*.json"))), None)
-            post = _read_json(first) if first else None
+            first = next((p for p in sorted(d.glob("post_*.json")) if not p.is_symlink()), None)
+            post = _read_json(first) if first and job_dir.resolve() in first.resolve().parents else None
     except (OSError, ValueError, TypeError):
         return ""
     return str(post.get("origin_url") or "") if isinstance(post, dict) else ""
 
 
-def _job_from_state(state: dict, *, archived: bool, job_dir: Path | None, fallback_title: str = "",
-                    origin_memo: dict | None = None) -> MadeJob | None:
+def _job_from_state(state: dict, *, job_dir: Path) -> MadeJob | None:
     src = state.get("source") or {}
     no = str(src.get("no") or "").strip()
     if not no:
@@ -206,85 +203,67 @@ def _job_from_state(state: dict, *, archived: bool, job_dir: Path | None, fallba
     jid = str(state.get("id") or "")
     if not gallery or not jid:
         return None
-    site = "blind" if str(src.get("site") or "") == "blind" else "dcinside"
+    site = str(src.get("site") or "").strip().lower()
+    site = site if site in ("blind", "local") else "dcinside"
     steps = {s.get("key"): s.get("status") for s in state.get("steps") or [] if isinstance(s, dict)}
     if steps.get("source") == "error":      # 글을 가져오지도 못하고 실패한 작업은 만든 것으로 치지 않는다(다시 시도할 수 있게)
         return None
-    if origin_memo is not None and jid in origin_memo:
-        origin = origin_memo[jid]
-    else:
-        origin = _origin_from(job_dir, no)
-        if origin_memo is not None and origin:        # 빈 값은 두지 않는다(글을 아직 못 가져왔거나 드라이브가 꺼진 것일 수 있음)
-            origin_memo[jid] = origin
+    origin = _origin_from(job_dir, no)
     return MadeJob(job_id=jid, gallery=gallery, no=no,
-                   source_title=str(src.get("title") or fallback_title or ""),
-                   our_title=str(state.get("title") or src.get("title") or fallback_title or ""),
-                   created_at=str(state.get("created_at") or ""), archived=archived,
+                   source_title=str(src.get("title") or ""),
+                   our_title=str(state.get("title") or src.get("title") or ""),
+                   created_at=str(state.get("created_at") or ""),
                    finished=steps.get("render") == "done", status=str(state.get("status") or ""), origin_url=origin,
                    site=site)
+
+
+def _local_states(root: Path) -> list[Path]:
+    """작업 폴더 밖을 가리키는 심볼릭 링크를 따라 읽지 않는다."""
+    try:
+        paths = []
+        for directory in sorted(root.iterdir()):
+            if directory.is_symlink() or not directory.is_dir():
+                continue
+            state = directory / "state.json"
+            if not state.is_symlink() and state.is_file():
+                paths.append(state)
+        return paths
+    except OSError:
+        return []
 
 
 def _signature(root: Path) -> tuple:
     sig = []
     try:
-        for p in sorted(root.glob("*/state.json")):
+        for p in _local_states(root):
             st = p.stat()
             sig.append((p.parent.name, st.st_mtime_ns, st.st_size))
     except OSError:
         pass
-    try:
-        st = (root / "_archive.json").stat()
-        sig.append(("_archive.json", st.st_mtime_ns, st.st_size))
-    except OSError:
-        sig.append(("_archive.json", 0, 0))
     return tuple(sig)
 
 
 _cache: dict[str, tuple[tuple, MadeIndex]] = {}
-_origin_memo: dict[str, dict[str, str]] = {}          # work 폴더별 {job id: 원본 주소} — 느릴 수 있는 드라이브를 매번 다시 읽지 않게
 _lock = threading.Lock()
 
 
 def build_index(work_root: Path | str) -> MadeIndex:
-    """work_root 의 로컬 job 과 보관(_archive.json) job 으로 색인을 새로 만든다(캐시 안 씀)."""
-    root = Path(work_root)
-    memo = _origin_memo.setdefault(str(root.resolve()), {})
+    """work_root 내부의 state.json 만으로 색인을 새로 만든다(캐시 안 씀)."""
+    root = Path(work_root).expanduser().resolve()
     jobs: dict[str, MadeJob] = {}
-    try:
-        paths = sorted(root.glob("*/state.json"))
-    except OSError:
-        paths = []
-    for p in paths:
+    for p in _local_states(root):
         st = _read_json(p)
         if not isinstance(st, dict) or st.get("id") != p.parent.name:
             continue
-        j = _job_from_state(st, archived=bool((st.get("archive") or {}).get("status") == "done"), job_dir=p.parent, origin_memo=memo)
-        if j:
-            jobs[j.job_id] = j
-    try:
-        from recap_shorts import archive
-        entries = archive.load_index(root)
-    except Exception:  # noqa: BLE001 — 색인이 깨져도 목록은 보여야 한다
-        entries = []
-    for e in entries:
-        st = e.get("state")
-        if not isinstance(st, dict):
-            continue
-        st = {**st, "id": st.get("id") or e.get("id"), "created_at": st.get("created_at") or e.get("created_at"),
-              "title": st.get("title") or e.get("title")}
-        try:
-            d = Path(e["path"])
-        except (TypeError, ValueError, KeyError):
-            d = None
-        j = _job_from_state(st, archived=True, job_dir=d, fallback_title=str(e.get("title") or ""), origin_memo=memo)
+        j = _job_from_state(st, job_dir=p.parent)
         if j:
             jobs[j.job_id] = j
     return MadeIndex(list(jobs.values()))
 
 
 def get_index(work_root: Path | str) -> MadeIndex:
-    """build_index 를 캐시한다 — work/*/state.json 과 _archive.json 의 수정 시각·크기가 그대로면 다시 만들지 않는다."""
-    root = Path(work_root)
+    """로컬 work/*/state.json 의 수정 시각·크기가 같으면 기존 색인을 쓴다."""
+    root = Path(work_root).expanduser().resolve()
     sig = _signature(root)
     key = str(root.resolve())
     with _lock:
@@ -300,7 +279,6 @@ def get_index(work_root: Path | str) -> MadeIndex:
 def clear_cache() -> None:
     with _lock:
         _cache.clear()
-        _origin_memo.clear()
 
 
 # ---------------------------------------------------------------- 목록에 붙이기

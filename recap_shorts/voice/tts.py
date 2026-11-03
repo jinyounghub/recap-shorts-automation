@@ -74,7 +74,7 @@ def _engine(d: Path):
             except ImportError as e:  # pragma: no cover
                 raise TTSUnavailable("pip install -r requirements-voice.txt") from e
             if not (d / "vocoder.int8.onnx").exists():
-                raise TTSUnavailable(f"Supertonic 모델 없음: {d} — .venv\\Scripts\\python scripts\\setup_models.py --supertonic 로 받으세요")
+                raise TTSUnavailable(f"Supertonic 모델 없음: {d} — 기존 모델을 RECAP_SUPERTONIC_DIR 로 연결하세요")
             cfg = so.OfflineTtsConfig(
                 model=so.OfflineTtsModelConfig(
                     supertonic=so.OfflineTtsSupertonicModelConfig(

@@ -4,7 +4,7 @@
 그래서 문장 전체와 짤마다의 뜻(manifest 의 meaning)을 함께 보여 주고, 반응이 자연스러운 문장에만 짤을 고르게 한다.
 어울리는 곳이 없으면 짤을 안 쓴다(측정에서 35%는 0개였다).
 
-영상 한 편에 Gemini 텍스트 호출 1번. 결과는 fx/meme_fit.json 에 저장(문장·짤 목록이 같으면 다시 부르지 않는다).
+영상 한 편에 Codex 텍스트 호출 1번. 결과는 fx/meme_fit.json 에 저장(문장·짤 목록이 같으면 다시 부르지 않는다).
 """
 from __future__ import annotations
 
@@ -60,11 +60,13 @@ def validate(raw, eligible: list[int], ids: list[str], max_n: int) -> Optional[l
 
 
 def fit_memes(sentences: list[dict], library: list[dict], eligible: list[int], max_n: int, *,
-              cache_path: str | Path | None = None, use_llm: bool = True, model: str = "gemini-3.8-flash",
+              cache_path: str | Path | None = None, use_llm: bool = True, model: str | None = None,
               llm: Optional[Callable[[str], dict]] = None) -> dict:
     """반환 {"picks": [...], "source": "llm|cache|none", "error": …}. LLM 을 못 쓰면 picks 는 빈 목록(짤 없음).
     llm 은 시험용 대체 호출(prompt → dict)."""
     texts = [s["text"] for s in sentences]
+    if model and model.lower().startswith("gemini"):
+        model = None  # retain compatibility with pre-Codex local settings
     ids = [it["id"] for it in library]
     dg = _digest(texts, ids, eligible, max_n)
     cp = Path(cache_path) if cache_path else None
@@ -81,11 +83,11 @@ def fit_memes(sentences: list[dict], library: list[dict], eligible: list[int], m
     try:
         if llm is None:
             if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("RECAP_FX_NO_LLM"):
-                raise RuntimeError("시험 중이거나 RECAP_FX_NO_LLM 설정 — Gemini 를 부르지 않음")
-            from recap_shorts.llm.gemini_api import generate_text
+                raise RuntimeError("시험 중이거나 RECAP_FX_NO_LLM 설정 — Codex 를 부르지 않음")
+            from recap_shorts.llm.codex import generate_text
 
             def llm(prompt, _m=model):
-                return generate_text(prompt, model=_m, json=True, temperature=0.2, timeout=60)
+                return generate_text(prompt, model=_m, json=True, timeout=180)
         got = validate(llm(build_prompt(sentences, library, eligible, max_n)), eligible, ids, max_n)
         if got is None:
             res["error"] = "응답 모양이 맞지 않음"

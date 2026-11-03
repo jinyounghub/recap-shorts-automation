@@ -1,4 +1,6 @@
-# 02. 제작 프로그램 설계 (MVP)
+# 02. 제작 프로그램 설계
+
+macOS/Codex 실행과 기존 로컬 모델 연결은 [README](../README.md) 및 [맥 인수인계](macos_codex.md)를 따른다.
 
 - 목표: **주제 하나 → 35초 안팎의 9:16 이미지 슬라이드형 쇼츠 1편**을 끝까지 자동으로 만들고, 사람이 검수한다.
 - 입력: 디시인사이드 글(실시간 베스트·갤러리) 또는 블라인드 인기글 하나. 글 주소를 넣거나 인기글 목록에서 고른다.
@@ -43,13 +45,13 @@ source(글·캡처) → read(글자 읽기) → script(LLM) → voice(TTS) → a
 | 단계 | 모듈 | 입력 → 출력 |
 |---|---|---|
 | `source` 글 가져오기 | `recap_shorts/collect/dcinside.py`·`blind.py`·`dcbest.py` | 글 주소 → 글 본문·첨부 그림, 글 머리·댓글 캡처(닉네임·IP·회사명 가림) |
-| `read` 자료 읽기 | `recap_shorts/pipeline.py`(step_read), `llm/gemini_api.py` | 첨부 그림·댓글 캡처 → `topic.json`(옮겨 적은 글자·종류·얼굴/아이디 표시) |
+| `read` 자료 읽기 | `recap_shorts/pipeline.py`(step_read), `llm/codex.py` | 첨부 그림·댓글 캡처 → `topic.json`(옮겨 적은 글자·종류·얼굴/아이디 표시) |
 | `script` 대본 | `recap_shorts/script/` | `topic.json` → `script_final/script.json`(제목 2줄, 훅, 본문 문장[근거 포함], 끝 한 줄, 장면 설명) + `script_check.json`(사실 가드) |
 | `voice` 목소리 | `recap_shorts/voice/` | `script.json` → `voice/voice.wav`, `voice/timings.json`(문장별 시각·받아쓰기 확인) |
 | `assets` 자료 화면 | `recap_shorts/images/` | 장면 설명 → 글 캡처 카드(가림)·대상 사진·AI 그림 + `assets/assets.json`, `assets/manifest.jsonl` |
 | `scenes` 장면 배치 | `recap_shorts/images/arrange.py`, `pipeline.build_plan` | 문장×그림 후보 → `shot_plan.json`(문장마다 보여 줄 그림) |
 | `render` 영상 만들기 | `recap_shorts/timeline.py`, `recap_shorts/render/` | `timeline.json` → `out/final.mp4` |
-| `review` 검수 | `recap_shorts/pipeline.py`(step_review), `clef/inspect.py` | 영상·규격 → `out/review.json`, `out/description.txt` |
+| `review` 검수 | `recap_shorts/pipeline.py`(step_review), Codex의 직접 검수 | 영상·규격 → `out/review.json`, `out/description.txt` |
 
 ### 3.1 데이터 형식 (모듈 사이 계약)
 
@@ -92,10 +94,10 @@ source(글·캡처) → read(글자 읽기) → script(LLM) → voice(TTS) → a
 
 | 일 | 쓰는 것 | 메모 |
 |---|---|---|
-| 대본 | Gemini API `gemini-4-argon` (기본) | 설정 화면의 '대본' 모델. `RECAP_SCRIPT_LLM=agy` 로 Antigravity CLI(`gemini-3.8-flash-high`)를 쓸 수 있다. 시험은 LLM 을 가짜로 바꿔 끼운다 |
-| 목소리 | Gemini TTS `gemini-3.8-flash-tts`, 기본 목소리 Charon | 로컬 목소리 **Supertonic-3**(sherpa-onnx, `models/` 아래 모델 파일, `scripts/setup_models.py --supertonic`)도 고를 수 있다 |
+| 대본·비전 | 기존 ChatGPT 로그인으로 `codex exec` | 현재 Codex 모델 설정을 사용. API 키와 별도 OAuth 토큰을 읽지 않음 |
+| 목소리 | 기존 로컬 Qwen/MLX 명령(기본) 또는 기존 Supertonic | 모델·가상환경·참조 음성을 교체하지 않고 실행 명령만 연결 |
 | 낱말 시각 | 문장 단위 TTS 길이 + 문장 안 음절 수 비례 | 받아쓰기(SenseVoice)가 있으면 글자 시각으로 보정하고, 문장 안 그림 컷을 어절 경계에 놓는 데도 쓴다(`recap_shorts/wordcuts.py`) |
-| 이미지 생성 | Gemini 이미지 `gemini-3.1-flash-image` (기본) | 설정에서 ①로컬 이미지 서버(따로 띄우는 프로그램, 이 저장소에 없음) ②Gemini 이미지 ③AI 그림 안 만듦 중에 고른다. 사람을 닮은 이미지 금지, 프롬프트를 manifest 에 기록 |
+| 이미지 생성 | 현재 Codex 세션의 내장 imagegen | `assets/imagegen_tasks.json` → 실제 PNG 저장 → `resume`; 파일이 없으면 `awaiting_images`에서 대기 |
 | 라이선스 사진 | Wikimedia Commons, Openverse | 허용 라이선스만 남기고 출처 표기 문자열을 저장 |
 | 렌더 | Pillow 로 프레임 합성 → ffmpeg(libx264, yuv420p) | 글꼴 `assets/fonts/Pretendard-ExtraBold.otf`·`Pretendard-Black.otf`, 없으면 맑은 고딕/Noto 로 물러남 |
 | 배경음악 | 기본은 영상에 굽지 않음(`bgm_mode: "upload_note"`) | `timeline.audio.bgm` 을 요청하면 `out/upload_sound.txt` 에 곡·시작 위치·크기 힌트를 적는다(docs/fx_config.md) |

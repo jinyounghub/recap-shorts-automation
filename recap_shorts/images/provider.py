@@ -1,25 +1,8 @@
-"""자료 이미지 생성: 로컬 이미지 서버(이 저장소 밖에서 따로 띄우는 프로그램) 또는 Gemini 이미지 — 설정의 image_engine 대로.
-
-로컬 서버: POST http://127.0.0.1:8791/api/image  {"prompt","aspect":"landscape","format":"png"} → 응답 본문 = PNG 바이트.
-한 장 33~76초(평균 51초). 서버가 꺼져 있고 Gemini 키도 없으면 available()=False 이고 호출자는 이미지 생성을 건너뛴다.
-실패는 예외 대신 {"ok": False, "error": 이유} 로 돌려줘 다른 단계가 계속되게 한다.
-
-image_engine: local = 로컬 서버(한도면 Gemini 대체) / gemini = Gemini 만 / off = 안 만듦 (기본 gemini — settings.py).
-"자동"(서버가 켜져 있으면 local, 아니면 gemini)은 쓰지 않는다. 로컬 서버 켜짐 확인 결과는 60초 캐시(local_server_up).
-"""
+"""Codex native imagegen task handoff; no image HTTP client or paid fallback."""
 from __future__ import annotations
 
-import io
-import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import requests
-
-BASE_URL = os.environ.get("RECAP_IMAGE_URL", "http://127.0.0.1:8791")
-TIMEOUT = 300.0
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 # 공통 규칙: 사진처럼 사실적, 4:3 가로, 스톡 사진 티 금지, 실존 인물 닮게 금지, 글자는 설명이 따옴표로 준 짧은 한글만.
 # 참고한 쇼츠의 AI 그림은 '문장이 말한 그 장면'을 정면으로 보여 주고(한국 단서 40%, 표정이 읽히는 지어낸 사람 14%,
@@ -64,14 +47,14 @@ def build_prompt(hint: str) -> str:
 
 
 def hints_to_prompts(hints: list[str], text_fn=None) -> list[str]:
-    """한국어 image_hint 들을 영어 장면 묘사로(한 번의 gemini-3.8-flash 호출). 개수가 안 맞으면 예외."""
+    """한국어 image_hint 들을 영어 장면 묘사로(Codex OAuth 호출 1회). 개수가 안 맞으면 예외."""
     if not hints:
         return []
     if text_fn is None:
-        from recap_shorts.llm.gemini_api import VISION_MODEL, generate_text
+        from recap_shorts.llm.codex import generate_text
 
         def text_fn(p):
-            return generate_text(p, VISION_MODEL, json=True)
+            return generate_text(p, json=True)
     lines = "\n".join(f"{i + 1}. {h}" for i, h in enumerate(hints))
     out = text_fn(HINT_INSTRUCTION + lines)
     prompts = out.get("prompts") if isinstance(out, dict) else None
@@ -80,148 +63,47 @@ def hints_to_prompts(hints: list[str], text_fn=None) -> list[str]:
     return [str(p).strip() for p in prompts]
 
 
-def local_url() -> str:
-    """로컬 이미지 서버 주소(환경변수 RECAP_IMAGE_URL, 부를 때 읽는다)."""
-    return os.environ.get("RECAP_IMAGE_URL", BASE_URL)
-
-
-def local_available(base_url: str | None = None, timeout: float = 3.0) -> bool:
-    """로컬 서버가 응답하는가(캐시 없이 바로 확인)."""
-    try:
-        r = requests.get((base_url or local_url()) + "/", timeout=timeout)
-        return r.status_code < 500
-    except requests.RequestException:
-        return False
-
-
-_PROBE = {"at": 0.0, "up": False}       # 로컬 서버 켜짐 확인 60초 캐시(계약서 3절)
-_PROBE_TTL = 60.0
-
-
-def local_server_up() -> bool:
-    """로컬 서버 켜짐(60초 캐시) — 설정 화면·상태 점검용. 생성 여부 판단은 available() 가 캐시 없이 한다."""
-    now = time.time()
-    if now - _PROBE["at"] >= _PROBE_TTL:
-        _PROBE["up"], _PROBE["at"] = local_available(), now
-    return bool(_PROBE["up"])
-
-
-def _gemini_key() -> bool:
-    from recap_shorts import settings
-    return bool(settings.get_key("gemini_api_key"))
-
-
 def engine() -> str:
-    """지금 쓸 엔진: local | gemini | off (설정 그대로)."""
     from recap_shorts import settings
-    return settings.image_engine()
+    value = settings.image_engine()
+    if value not in ("codex", "off"):
+        raise ValueError("이미지 엔진은 codex 또는 off만 사용할 수 있습니다")
+    return value
 
 
 def engine_detail() -> str:
-    """화면·상태 점검에 쓰는 한 줄 설명."""
-    e = engine()
-    if e == "off":
-        return "AI 그림 꺼짐 — 캡처 카드만"
-    return "로컬 이미지 서버로 만듦" if e == "local" else "Gemini 이미지로 만듦"
+    return ("AI 그림 꺼짐 — 캡처 카드만" if engine() == "off" else
+            "Codex 내장 imagegen 작업 대기 — 현재 Codex 세션에서 생성")
 
 
-def available(base_url: str | None = None, timeout: float = 3.0) -> bool:
-    """이미지를 만들 수 있는가. base_url 을 주면 예전처럼 로컬 서버만 확인한다(시험·수동 확인용)."""
-    if base_url is not None:
-        return local_available(base_url, timeout)
-    e = engine()
-    if e == "off":
-        return False
-    if e == "local":
-        return local_available(timeout=timeout)
-    return _gemini_key()
+def available() -> bool:
+    """Task handoff is enabled; this does not attest tool availability in Codex."""
+    return engine() == "codex"
 
 
 def engine_status() -> tuple[bool, str, str]:
-    """(쓸 수 있음, 엔진, 상태 점검 detail)."""
     return available(), engine(), engine_detail()
 
 
-FALLBACK = os.environ.get("RECAP_IMAGE_FALLBACK", "gemini")   # "gemini" | "" (끔)
-_limit_until = [0.0]   # 로컬 서버가 한도에 걸리면 이 시각까지는 바로 대체 엔진으로
-
-
-def generate(prompt: str, out_png: str | Path, aspect: str = "landscape", *, base_url: str | None = None,
-             timeout: float = TIMEOUT) -> dict:
-    """image_engine 대로 만든다. local 은 로컬 이미지 서버로 만들고, 그 서버가 사용 한도
-    (usage_limit_reached)에 걸리면 Gemini 이미지(Nano Banana 2)로 대신 만든다.
-    한도가 차면 한 영상의 AI 이미지가 모두 실패할 수 있다.
-    base_url 을 주면 예전처럼 로컬 서버만 쓴다."""
-    if base_url is None:
-        e = engine()
-    else:
-        e = "local"
-    if e == "off":
+def generate(prompt: str, out_png: str | Path, aspect: str = "landscape") -> dict:
+    if engine() == "off":
         return {"ok": False, "file": str(out_png), "seconds": 0.0,
-                "error": "AI 그림을 만들지 않도록 설정되어 있습니다(image_engine=off)"}
-    if e == "gemini":
-        from recap_shorts.images import gemini_image
-        return gemini_image.generate(prompt, out_png, aspect)
-    if FALLBACK == "gemini" and time.time() < _limit_until[0]:
-        from recap_shorts.images import gemini_image
-        return gemini_image.generate(prompt, out_png, aspect)
-    res = generate_local(prompt, out_png, aspect, base_url=base_url, timeout=timeout)
-    if not res["ok"] and FALLBACK == "gemini" and "usage_limit" in (res.get("error") or ""):
-        _limit_until[0] = time.time() + 1800
-        from recap_shorts.images import gemini_image
-        alt = gemini_image.generate(prompt, out_png, aspect)
-        alt["fallback_from"] = res.get("error", "")[:160]
-        return alt
-    return res
-
-
-def generate_local(prompt: str, out_png: str | Path, aspect: str = "landscape", *, base_url: str | None = None,
-                   timeout: float = TIMEOUT) -> dict:
-    """prompt(공통 규칙이 이미 붙은 완성 프롬프트) → out_png. {"ok","file","seconds","error","size"}"""
-    out = Path(out_png)
-    t0 = time.time()
-    res: dict = {"ok": False, "file": str(out), "seconds": 0.0, "error": None}
-    try:
-        r = requests.post((base_url or local_url()) + "/api/image", json={"prompt": prompt, "aspect": aspect, "format": "png"},
-                          timeout=timeout)
-    except requests.RequestException as e:
-        res.update(error=f"이미지 서버 연결 실패({type(e).__name__})", seconds=round(time.time() - t0, 1))
-        return res
-    res["seconds"] = round(time.time() - t0, 1)
-    if r.status_code != 200:
-        res["error"] = f"이미지 서버 HTTP {r.status_code}: {r.text[:200]}"
-        return res
-    data = r.content
-    if not data.startswith(PNG_MAGIC):
-        res["error"] = f"이미지 서버 응답이 PNG 가 아님({len(data)}바이트)"
-        return res
-    try:
-        from PIL import Image
-        with Image.open(io.BytesIO(data)) as im:
-            im.verify()
-            res["size"] = list(im.size)
-    except Exception as e:  # noqa: BLE001
-        res["error"] = f"이미지 검증 실패: {type(e).__name__}"
-        return res
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(data)
-    res["ok"] = True
-    from recap_shorts import usage
-    usage.log("image", model="local-image-server", seconds=res["seconds"], size=res.get("size"), aspect=aspect)
-    return res
+                "pending": False, "error": "AI 그림 생성이 꺼져 있습니다(image_engine=off)"}
+    from .codex_imagegen import request
+    return request(prompt, out_png, aspect)
 
 
 def generate_many(items: list[dict], workers: int = 2, on_done=None, gen=None) -> list[dict]:
-    """items: [{"prompt","out"}] → 같은 순서의 결과. 동시에 workers(≤2)장. on_done(i, result) 는 한 장 끝날 때마다."""
+    """Register tasks and inspect existing files; never synthesize image pixels."""
     gen = gen or generate
     results: list[dict | None] = [None] * len(items)
 
     def one(i):
-        r = gen(items[i]["prompt"], items[i]["out"], items[i].get("aspect", "landscape"))
-        results[i] = r
+        result = gen(items[i]["prompt"], items[i]["out"], items[i].get("aspect", "landscape"))
+        results[i] = result
         if on_done:
-            on_done(i, r)
+            on_done(i, result)
 
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 2))) as ex:
-        list(ex.map(one, range(len(items))))
-    return results  # type: ignore[return-value]
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 2))) as pool:
+        list(pool.map(one, range(len(items))))
+    return results

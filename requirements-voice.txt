@@ -1,13 +1,7 @@
-# -*- coding: utf-8 -*-
-# 목소리·대본 모듈용 (저장소 .venv 에 설치: .venv\Scripts\python -m pip install -r requirements-voice.txt)
-sherpa-onnx==1.13.8
-soundfile==0.14.0
-numpy==2.2.6
-# 그 밖에 필요한 것:
-#   ffmpeg (PATH, 9.0.2에서 시험)
-#   모델: 저장소 안 models\ 에 받는다 — .venv\Scripts\python scripts\setup_models.py (--supertonic, --all)
-#     - sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17 (받아쓰기, 약 163 MB)
-#     - sherpa-onnx-supertonic-3-tts-int8-2026-05-11 (로컬 목소리, 약 129 MB, -Supertonic 또는 --supertonic)
-#     RECAP_SUPERTONIC_DIR, RECAP_SENSEVOICE_DIR 로 다른 폴더를 가리킬 수 있다(환경변수가 우선).
-#   대본: 기본은 Gemini API (설정 화면에서 키를 넣음). agy CLI 를 쓰려면 RECAP_SCRIPT_LLM=agy,
-#         RECAP_AGY_PATH 로 경로 지정(Antigravity, 이 PC에 로그인되어 있어야 함).
+# Pipeline audio tools only; keep the existing Qwen/MLX virtual environment separate.
+soundfile>=0.12,<1
+numpy>=1.26,<3
+# Optional existing SenseVoice/Supertonic runtime (not needed for Qwen command synthesis):
+# sherpa-onnx>=1.12,<2
+# Connect existing models with RECAP_SENSEVOICE_DIR / RECAP_SUPERTONIC_DIR.
+# No models are downloaded by running the voice pipeline.

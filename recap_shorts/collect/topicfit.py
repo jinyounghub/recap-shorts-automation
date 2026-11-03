@@ -2,10 +2,10 @@
 
 - 설정: config/channel.json(커밋, 기본값·프리셋) + config/channel.local.json(gitignore, 화면에서 고른 값). local 이 있으면 그쪽이 우선.
   main_topic 이 null 이면 "없음" — 이때는 점수도 매기지 않고 LLM 도 부르지 않는다(예전 동작 그대로).
-- 점수: 제목(+ 앞의 [갤러리] 표시)만 보고 2=딱 맞음 · 1=조금 · 0=아님. 안 매긴 글만 batch 개씩 Gemini 한 번에 묻고(JSON),
+- 점수: 제목(+ 앞의 [갤러리] 표시)만 보고 2=딱 맞음 · 1=조금 · 0=아님. 안 매긴 글만 batch 개씩 Codex 한 번에 묻고(JSON),
   글×대주제마다 work/_topics/fit_<번호>_<대주제키>.json 에 보관해 다시 묻지 않는다. 대주제 설명(desc)이나 질문 문구(FIT_VERSION)가
   바뀌면 키가 달라져 다시 매긴다. 실패한 묶음은 저장하지 않아 다음에 다시 묻는다.
-- 사용량 기록: llm.gemini_api._post 가 호출마다 work/_usage.jsonl 에 gemini_text 로 남긴다(여기서 따로 쓰지 않음 — 이중 집계 방지).
+- 사용량 기록: llm.codex 가 호출마다 work/_usage.jsonl 에 codex 로 남긴다(여기서 따로 쓰지 않음 — 이중 집계 방지).
 - 순서: 2 → 1 → (점수 없음) → 0, 같은 묶음 안에서는 원래 순서 그대로. 점수를 못 매기면 순서도 그대로.
 - CLI: python -m recap_shorts.collect topics-fit --topic daily_drama --dry-run
 """
@@ -28,13 +28,13 @@ CONFIG_PATH = ROOT / "config" / "channel.json"
 LOCAL_PATH = ROOT / "config" / "channel.local.json"
 FIT_VERSION = 1                 # 질문 문구를 바꾸면 올린다 → 보관된 점수가 달라진 키로 다시 매겨진다
 DEFAULT_BATCH = 30
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = None  # inherit the current Codex model
 MAX_CUSTOM = 200
 MAX_TITLE = 120
 FIT_TEXT = {2: "딱 맞음", 1: "조금", 0: "아님"}
 _RANK = {2: 0, 1: 1, None: 2, 0: 3}      # 정렬 순서: 딱 맞음 → 조금 → 점수 없음 → 아님
 
-LLM = Callable[[str, str], "dict | str"]   # (프롬프트, 모델) → JSON 객체
+LLM = Callable[[str, str | None], "dict | str"]   # (프롬프트, 모델) → JSON 객체
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,12 @@ def _read(path: Path | str | None) -> dict:
     return d if isinstance(d, dict) else {}
 
 
+def _codex_model(value) -> str | None:
+    """Discard model names from old Google configurations on migration."""
+    model = str(value or "").strip()
+    return model if model and not model.lower().startswith("gemini") else None
+
+
 def load_config(path: Path | str | None = None, local: Path | str | None = None) -> dict:
     """커밋된 설정 위에 local 설정(main_topic·custom)을 덮은 결과. 파일이 없거나 깨졌으면 "없음"."""
     base = _read(path or CONFIG_PATH)
@@ -61,7 +67,7 @@ def load_config(path: Path | str | None = None, local: Path | str | None = None)
     presets = [p for p in (base.get("presets") or []) if isinstance(p, dict) and p.get("id") and p.get("label")]
     fit = base.get("fit") if isinstance(base.get("fit"), dict) else {}
     cfg = {"main_topic": base.get("main_topic"), "custom": base.get("custom"), "presets": presets,
-           "fit": {"batch": int(fit.get("batch") or DEFAULT_BATCH), "model": str(fit.get("model") or DEFAULT_MODEL)},
+           "fit": {"batch": int(fit.get("batch") or DEFAULT_BATCH), "model": _codex_model(fit.get("model"))},
            "source": "default"}
     if "main_topic" in loc:          # null(없음)도 값이다 — 커밋된 기본값을 끄는 선택
         cfg["main_topic"] = loc["main_topic"]
@@ -189,7 +195,7 @@ def _read_cache(cache_dir: Path | None, no, topic: Topic) -> int | None:
 
 
 def score(rows: list[tuple[int, str, str]], topic: Topic, llm: LLM, cache_dir: Path | None, *,
-          batch: int = DEFAULT_BATCH, model: str = DEFAULT_MODEL) -> tuple[dict[int, int], str, str]:
+          batch: int = DEFAULT_BATCH, model: str | None = DEFAULT_MODEL) -> tuple[dict[int, int], str, str]:
     """rows: (글번호, 갤러리 표시, 제목) → ({글번호: 0|1|2}, 상태, 설명). 상태: ok | partial | unavailable.
 
     - 이미 매긴 글(cache_dir/fit_<번호>_<키>.json)은 다시 묻지 않는다. cache_dir 이 None 이면 보관하지 않는다(--dry-run).
@@ -243,7 +249,7 @@ def order(items: list[dict], hide_unfit: bool = False) -> list[dict]:
 
 
 def apply_to_views(items: list[dict], topic: Topic | None, llm: LLM, cache_dir: Path | None, *, batch: int = DEFAULT_BATCH,
-                   model: str = DEFAULT_MODEL, hide_unfit: bool = False) -> tuple[list[dict], dict]:
+                   model: str | None = DEFAULT_MODEL, hide_unfit: bool = False) -> tuple[list[dict], dict]:
     """topic_view 목록에 fit 을 붙이고 순서를 바꾼다 → (목록, 응답에 덧붙일 필드). 대주제가 없으면 아무것도 안 한다(LLM 호출 0)."""
     if topic is None:
         return items, {"channel": None, "fit": "off", "fit_note": "", "unfit_count": 0}
@@ -257,19 +263,19 @@ def apply_to_views(items: list[dict], topic: Topic | None, llm: LLM, cache_dir: 
     return order(items, hide_unfit), extra
 
 
-# ---------------------------------------------------------------- 진짜 Gemini 호출(시험 중에는 막음)
-def gemini_llm(prompt: str, model: str = DEFAULT_MODEL) -> dict:
+# ---------------------------------------------------------------- 진짜 Codex 호출(시험 중에는 막음)
+def codex_llm(prompt: str, model: str | None = DEFAULT_MODEL) -> dict:
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        raise RuntimeError("시험 중에는 Gemini 를 부르지 않음")
-    from recap_shorts.llm.gemini_api import generate_text
-    return generate_text(prompt, model, json=True, temperature=0.0, timeout=90, thinking="low")   # 제목 30개 분류라 깊은 생각 불필요(기본값은 묶음당 ~15초)
+        raise RuntimeError("시험 중에는 Codex 를 부르지 않음")
+    from recap_shorts.llm.codex import generate_text
+    return generate_text(prompt, _codex_model(model), json=True, timeout=180)
 
 
 # ---------------------------------------------------------------- CLI: python -m recap_shorts.collect topics-fit
 def cli_main(argv=None, *, fetch=None, llm: LLM | None = None) -> int:
     """지금 실시간 베스트 목록에 점수를 매겨 한 번 찍어 본다. fetch(pages, hours) / llm 은 시험용 대체."""
     ap = argparse.ArgumentParser(prog="python -m recap_shorts.collect topics-fit",
-                                 description="실시간 베스트 목록을 대주제에 맞춰 점수 매겨 찍는다(Gemini 호출 묶음당 1회).")
+                                 description="실시간 베스트 목록을 대주제에 맞춰 점수 매겨 찍는다(Codex 호출 묶음당 1회).")
     ap.add_argument("--topic", help="프리셋 id(예: daily_drama). 생략하면 지금 설정된 대주제")
     ap.add_argument("--custom", help="직접 입력한 대주제 문장(--topic 대신)")
     ap.add_argument("--pages", type=int, help="읽을 쪽 수(기본: config/topics.json)")
@@ -305,7 +311,7 @@ def cli_main(argv=None, *, fetch=None, llm: LLM | None = None) -> int:
     print(f"목록 {len(items)}개 (최근 {hours}시간, {pages}쪽)\n")
 
     calls = []
-    base = llm or gemini_llm
+    base = llm or codex_llm
 
     def counting(prompt, model):
         calls.append(len(prompt))
@@ -323,8 +329,8 @@ def cli_main(argv=None, *, fetch=None, llm: LLM | None = None) -> int:
     cnt = {k: sum(1 for v in views if v["fit"] == k) for k in (2, 1, 0)}
     print(f"\n점수: 딱 맞음(2) {cnt[2]} · 조금(1) {cnt[1]} · 아님(0) {cnt[0]} · 없음(-) {sum(1 for v in views if v['fit'] is None)}"
           f"  / 상태 {state}" + (f"  / {note}" if note else ""))
-    toks = [r for r in _usage_since(t0)]
-    print(f"Gemini 호출 {len(calls)}회, {time.time() - s0:.1f}초"
+    toks = [r for r in _usage_since(t0) if "prompt_tokens" in r]
+    print(f"Codex 호출 {len(calls)}회, {time.time() - s0:.1f}초"
           + (f", 토큰 입력 {sum(r.get('prompt_tokens') or 0 for r in toks)} · 출력 {sum(r.get('output_tokens') or 0 for r in toks)}"
              f" · 생각 {sum(r.get('thought_tokens') or 0 for r in toks)} (work/_usage.jsonl 기록)" if toks else "")
           + (" — 보관 안 함(--dry-run)" if a.dry_run else f" — 점수를 {cache_dir} 에 보관"))
@@ -334,6 +340,6 @@ def cli_main(argv=None, *, fetch=None, llm: LLM | None = None) -> int:
 def _usage_since(ts: str) -> list[dict]:
     try:
         from recap_shorts import usage
-        return [r for r in usage.read(since=ts) if r.get("kind") == "gemini_text"]
+        return [r for r in usage.read(since=ts) if r.get("kind") == "codex"]
     except Exception:  # noqa: BLE001
         return []

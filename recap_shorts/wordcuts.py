@@ -435,6 +435,8 @@ def from_options(job_dir: str | Path, timings: dict, options: dict | None = None
         from .fx.config import load_config
         ov = (options or {}).get("fx")
         cfg = load_config(None, ov if isinstance(ov, dict) else None)
+        if (options or {}).get("check_asr") is False:
+            asr = "off"
         return for_job(job_dir, timings, cfg, delay_s=picture_lead(cfg, options), voice=voice, asr=asr)
     except Exception:  # noqa: BLE001
         return None

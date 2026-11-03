@@ -1,4 +1,4 @@
-"""짤 폴더 분석: 재기(크기·투명·비슷한 그림) → Gemini 보기(뜻·분위기·계열·거를 것) → 고르기 → 꾸러미 (docs/library_analysis.md).
+"""짤 폴더 분석: 재기(크기·투명·비슷한 그림) → Codex 보기(뜻·분위기·계열·거를 것) → 고르기 → 꾸러미 (docs/library_analysis.md).
 
 영상에서는 짤의 뜻(meaning)을 보고 문장에 맞는 짤을 고른다(fx/meme_fit.py) — 그래서 여기서 뜻을 적어 두는 게 핵심이다.
 저작권은 따지지 않는다. 혐오 상징·성적·잔인한 그림은 뺀다. 실제 인물 사진은 표시만 한다.
@@ -20,7 +20,7 @@ from .config import BEAT_LABELS
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 COPY_AS_IS = (".png", ".jpg", ".jpeg")
-LOOK_SIDE = 512                   # Gemini 에 보여 줄 크기(긴 변)
+LOOK_SIDE = 512                   # Codex 에 보여 줄 크기(긴 변)
 
 BEAT_LABEL = {"shock": "충격·놀람", "funny": "웃김·황당", "sad": "슬픔·안타까움", "angry": "분노·답답함",
               "smug": "득의양양·비웃음", "awkward": "민망·어색", "reveal": "반전·사실 공개", "question": "의문",
@@ -168,7 +168,7 @@ def clean_seen(r: dict, beats: list[str]) -> dict:
             "quality": int(q) if isinstance(q, (int, float)) and 1 <= q <= 5 else 3}
 
 
-def look_batch(batch: list[tuple[str, Path]], beats: list[str], *, model: str,
+def look_batch(batch: list[tuple[str, Path]], beats: list[str], *, model: str | None = None,
                llm: Optional[Callable[[list], object]] = None) -> dict[str, dict]:
     """[(key, 경로)] 를 한 번에 보여 주고 {key: seen}. llm 은 시험용(parts → 답)."""
     parts: list[dict] = [{"text": build_prompt(beats)}]
@@ -179,10 +179,12 @@ def look_batch(batch: list[tuple[str, Path]], beats: list[str], *, model: str,
     if llm is not None:
         res = llm(parts)
     else:
-        from recap_shorts.llm import gemini_api as G
-        body = {"contents": [{"role": "user", "parts": parts}],
-                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}}
-        res = G._text_of(G._post(model, body, timeout=180))
+        from recap_shorts.llm.codex import read_images
+
+        labels = "\n".join(f'#{k}: "{Path(key).stem}"' for k, (key, _) in enumerate(batch, 1))
+        prompt = build_prompt(beats) + "\nAttached images are ordered as follows:\n" + labels
+        # The list parser below accepts the JSON array in this text response.
+        res = read_images([p for _, p in batch], prompt, model, json=False, timeout=300)
     if isinstance(res, str):
         res = parse_answer_list(res)
     elif isinstance(res, dict):

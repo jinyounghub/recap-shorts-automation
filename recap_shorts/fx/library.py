@@ -181,7 +181,7 @@ def stop(kind: str, pid: str) -> dict:
     if doc is None:
         raise LibraryError("꾸러미가 없습니다", 404)
     out = summary(doc)
-    if late:     # Gemini 에 이미 보낸 묶음은 답(최대 몇 분)을 받아야 끝난다 — 남은 묶음은 보내지 않는다
+    if late:     # Codex 에 이미 보낸 묶음은 답(최대 몇 분)을 받아야 끝난다 — 남은 묶음은 보내지 않는다
         out["message"] = "멈추는 중입니다 — 이미 보낸 것의 답이 오면 멈춥니다"
     return out
 
@@ -213,12 +213,12 @@ def _merge_items(doc: dict, src: Path, files: list[Path]) -> list[dict]:
     return items
 
 
-def _gemini_ready() -> bool:
+def _codex_ready() -> bool:
     if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("RECAP_FX_NO_LLM"):
         return False
     try:
-        from recap_shorts.voice.gemini import api_key
-        return bool(api_key())
+        from recap_shorts.llm.codex import is_available
+        return is_available()
     except Exception:  # noqa: BLE001
         return False
 
@@ -299,7 +299,7 @@ def _listen_all(doc: dict, todo: list[dict], call: Callable[[list[dict]], dict],
                     it["listen_error" if step == "heard" else "look_error"] = True
             if err is not None and _stop_on(err) and not state["halt"]:
                 from recap_shorts import errors
-                state["halt"] = errors.screen_text(err, "Gemini 요청이 막혔습니다")
+                state["halt"] = errors.screen_text(err, "Codex 요청이 막혔습니다")
             state["done"] += len(batch)
             _progress(doc, "듣는 중" if step == "heard" else "보는 중", state["done"], len(todo), last)
 
@@ -310,7 +310,7 @@ def _listen_all(doc: dict, todo: list[dict], call: Callable[[list[dict]], dict],
     missed = sum(1 for it in todo if step not in it or it.get(step) is None)
     notes = []
     if state["halt"]:
-        notes.append(f"Gemini 를 끝까지 쓰지 못함({state['halt']}) — 다시 분석하면 남은 것만 이어서 합니다")
+        notes.append(f"Codex 를 끝까지 쓰지 못함({state['halt']}) — 다시 분석하면 남은 것만 이어서 합니다")
     elif missed:
         notes.append(f"{missed}개는 답을 받지 못함 — 다시 분석하면 그것만 다시 묻습니다")
     return notes
@@ -355,8 +355,10 @@ def _run_sfx(doc, src, pack, cfg, stop_ev, llm, last) -> list[str]:
         for it in items:
             it.pop("heard", None)
     doc["types"] = types
-    model = str((cfg.get("analyze") or {}).get("model") or "gemini-3.8-flash")
-    if llm is not None or _gemini_ready():
+    model = (cfg.get("analyze") or {}).get("model") or None
+    if model and str(model).lower().startswith("gemini"):
+        model = None
+    if llm is not None:
         doc["state"] = "listening"
         todo = [it for it in items if it.get("heard") is None and not (it.get("measure") or {}).get("error")
                 and float((it.get("measure") or {}).get("dur", 0)) <= float(o["max_file_s"])]
@@ -367,7 +369,7 @@ def _run_sfx(doc, src, pack, cfg, stop_ev, llm, last) -> list[str]:
         doc["listened"], doc["model"] = True, model
     else:
         doc["listened"], doc["model"] = False, None
-        notes.append("Gemini 키가 없어 파일 이름으로만 종류를 정했습니다")
+        notes.append("음성의 외부 API 분석은 사용하지 않습니다. 로컬 측정값·파일명과 수동 manifest 태그로 종류를 정했습니다")
     doc["state"] = "building"
     _progress(doc, "꾸러미 만드는 중", 0, 1, last)
     AS.decide(items, types, o)
@@ -390,8 +392,10 @@ def _run_meme(doc, src, pack, cfg, stop_ev, llm, last) -> list[str]:
         it["measure"] = AM.measure(src / it["key"])
         _progress(doc, "재는 중", n, len(todo), last)
     notes: list[str] = []
-    model = str((cfg.get("analyze") or {}).get("model") or "gemini-3.8-flash")
-    if llm is not None or _gemini_ready():
+    model = (cfg.get("analyze") or {}).get("model") or None
+    if model and str(model).lower().startswith("gemini"):
+        model = None
+    if llm is not None or _codex_ready():
         doc["state"] = "listening"
         todo = [it for it in items if it.get("seen") is None and not (it.get("measure") or {}).get("error")
                 and min(int((it.get("measure") or {}).get("w", 0)), int((it.get("measure") or {}).get("h", 0))) >= int(o["min_side_px"])]
@@ -401,7 +405,7 @@ def _run_meme(doc, src, pack, cfg, stop_ev, llm, last) -> list[str]:
         doc["listened"], doc["model"] = True, model
     else:
         doc["listened"], doc["model"] = False, None
-        notes.append("Gemini 키가 없어 파일 이름을 짤의 뜻으로 씁니다")
+        notes.append("Codex CLI를 사용할 수 없어 파일 이름을 짤의 뜻으로 씁니다")
     doc["state"] = "building"
     _progress(doc, "꾸러미 만드는 중", 0, 1, last)
     AM.decide(items, o)

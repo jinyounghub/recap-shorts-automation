@@ -1,19 +1,9 @@
-# -*- coding: utf-8 -*-
-# Qwen3-TTS VoiceDesign 1.7B 전용 가상환경 (tools/qwen_tts/.venv) — 저장소 .venv 와 섞지 말 것
-# 설치:
-#   python -m venv tools\qwen_tts\.venv
-#   tools\qwen_tts\.venv\Scripts\python -m pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
-#   tools\qwen_tts\.venv\Scripts\python -m pip install -r requirements-qwen.txt   (아래 나머지; torch 는 위에서 이미 설치)
-# 모델(약 4.3GB, 토크나이저 speech_tokenizer 포함)은 첫 실행 때 tools\qwen_tts\models 로 자동 다운로드:
-#   Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign  (Apache-2.0)
-# 설치할 때 실제 해석된 버전 (Windows, Python 3.11, flash-attn 없이 sdpa 사용)
-qwen-tts==0.1.1
-transformers==4.57.3
-accelerate==1.12.0
-huggingface_hub==0.36.2
-soundfile==0.14.0
-numpy==2.4.6
-librosa==0.11.0
-onnxruntime==1.31.0
-einops==0.8.2
-sox==1.5.0
+# Existing Mac Qwen/MLX environment: do NOT install this into it or replace its versions.
+# Prefer RECAP_QWEN_COMMAND_JSON to invoke the working local command unchanged.
+# The optional tools/qwen_tts/synth_cli.py adapter uses existing qwen_tts, torch,
+# numpy and soundfile packages and an existing VoiceDesign model only.
+# RECAP_QWEN_PYTHON=/path/to/existing/venv/bin/python
+# RECAP_QWEN_MODEL=/path/to/existing/VoiceDesign-model
+# RECAP_QWEN_DEVICE=auto  (or cpu/mps/cuda; actual model support must be verified locally)
+# For MLX/Base/voice-clone variants, point RECAP_QWEN_COMMAND_JSON at the original
+# command or use RECAP_QWEN_SCRIPT with an adapter that accepts request.json.

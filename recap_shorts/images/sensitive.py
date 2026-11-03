@@ -4,7 +4,7 @@
 (아이디·얼굴·번호 가리기는 images/regions.py 가 한다. 여기는 '그림 자체가 자극적인가'를 다룬다.)
 
 흐름
-1. classify(): Gemini 3.8 Flash 비전(thinking low)에 그림 ≤8장씩 묶어 묻는다. 장마다 level(none|mild|strong)·kind·한국어 이유.
+1. classify(): Codex 비전에 그림 ≤8장씩 묶어 묻는다. 장마다 level(none|mild|strong)·kind·한국어 이유.
    그림 파일 sha1 별로 `<job>/assets/sensitive.json` 에 기록해 같은 그림은 다시 묻지 않는다.
 2. run(): 판정에 config/sensitive.json 의 처리(mild→gray, strong→gray_blur …)를 입힌다.
    처리 전 파일은 `<이름>.orig.png` 로 보관 → set_treatment() 가 되돌리거나 다른 처리로 바꾼다.
@@ -112,8 +112,8 @@ def file_sha1(path: str | Path) -> str:
 
 
 def _model() -> str:
-    from recap_shorts.llm.gemini_api import VISION_MODEL
-    return VISION_MODEL
+    from recap_shorts.llm.codex import VISION_MODEL
+    return VISION_MODEL or "codex-configured"
 
 
 class Cache:
@@ -172,7 +172,7 @@ def _prepare(path: str | Path) -> Image.Image:
 
 
 def _is_block(exc: Exception) -> bool:
-    """모델이 안전 문제로 답 자체를 막았나(gemini_api 가 낸 오류 문구로 알아본다)."""
+    """Explicit refusal markers from an injected classifier, never connection errors."""
     s = str(exc)
     return "blockReason" in s or any(f"finishReason={x}" in s for x in (
         "SAFETY", "PROHIBITED_CONTENT", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "BLOCKLIST", "SPII"))
@@ -536,7 +536,7 @@ def _expand(args: list[str]) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m recap_shorts.images.sensitive",
-                                 description="그림의 자극·잔혹 정도를 Gemini 비전으로 판정해 보여 준다(그림은 고치지 않는다).")
+                                 description="그림의 자극·잔혹 정도를 Codex 비전으로 판정해 보여 준다(그림은 고치지 않는다).")
     ap.add_argument("paths", nargs="+", help="그림 파일 또는 폴더(폴더는 하위까지)")
     ap.add_argument("--json", dest="json_out", help="결과를 이 JSON 파일에도 쓴다")
     ap.add_argument("--no-cache", action="store_true", help="기록을 읽지도 쓰지도 않고 모두 새로 묻는다")
@@ -552,7 +552,7 @@ def main(argv: list[str] | None = None) -> int:
     if not paths:
         print("판정할 그림이 없습니다", file=sys.stderr)
         return 2
-    from recap_shorts.llm.gemini_api import read_images
+    from recap_shorts.llm.codex import read_images
 
     def read_fn(imgs, instr):
         return read_images(imgs, instr, json=True, thinking="low")
@@ -575,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"[{row['level']:<7}] {row['kind']:<18} {row['reason']}  — {p}" + ("  (기록)" if row["cached"] else ""))
     print(f"\n{len(paths)}장 · none {counts['none']} · mild {counts['mild']} · strong {counts['strong']} · 오류 {counts['error']}"
-          f" · Gemini {rep['calls']}회 · 기록에서 {rep['cached']}장")
+          f" · Codex {rep['calls']}회 · 기록에서 {rep['cached']}장")
     if args.json_out:
         Path(args.json_out).write_text(json.dumps({"model": _model(), "prompt": PROMPT_V, "counts": counts,
                                                    "calls": rep["calls"], "items": rows}, ensure_ascii=False, indent=2),

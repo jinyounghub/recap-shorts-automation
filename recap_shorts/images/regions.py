@@ -1,7 +1,7 @@
 """캡처 속 '이 문장이 말하는 부분'과 '가려야 할 부분'을 비전 모델로 찾아 카드로 자른다 (캡처 위주 배치).
 
 - 문장의 image_hint 에 적힌 "캡처: 영수증 합계 부분" 같은 말을 질문으로 보낸다.
-- 상자는 Gemini 관례 [ymin, xmin, ymax, xmax] (0~1000 정규화)로 받아 원본 픽셀로 바꾼다.
+- 상자는 Codex 관례 [ymin, xmin, ymax, xmax] (0~1000 정규화)로 받아 원본 픽셀로 바꾼다.
 - 개인정보(아이디·닉네임·프로필 사진·얼굴·영수증/등록 번호·전화번호)와 욕설 낱말(줄 전체가 아니라 그 낱말만)은 같은 호출에서 상자로 받아 모자이크한다.
   모델이 놓칠 수 있으므로 카드에는 needs_review 를 남긴다(사람이 '가림 편집'으로 더할 수 있음).
 - 찾은 줄이 너무 가늘면 위아래를 조금 더 보여 주고, 원래 줄은 빨간 테두리로 표시한다.
@@ -79,7 +79,7 @@ def locate(path: str | Path, wants: list[str], read=None) -> dict:
     """wants: 찾을 부분 설명 목록 → {"parts": [box|None ...](wants 순서), "private": [box ...], "private_what": [종류 ...]}
     (원본 픽셀). private_what 은 private 와 같은 순서의 '아이디|프로필 사진|얼굴|번호|욕설'(모르면 "")."""
     if read is None:
-        from recap_shorts.llm.gemini_api import read_images
+        from recap_shorts.llm.codex import read_images
 
         def read(images, instruction):
             return read_images(images, instruction, json=False)     # 날글 → parse_answer 로 고쳐 읽음
@@ -618,11 +618,11 @@ def _flag_map(v) -> dict[int, bool]:
 
 def pick_panels(src: str | Path, boxes: list[tuple[int, int, int, int]], sentences: list[dict], read=None, *,
                 max_total: int = 10, per_sentence: int = 2, thumb_w: int = 512) -> dict:
-    """칸 쌓기 그림에서 문장별로 쓸 칸 고르기(Gemini 비전 1회, 60칸 넘으면 나눠서).
+    """칸 쌓기 그림에서 문장별로 쓸 칸 고르기(Codex 비전 1회, 60칸 넘으면 나눠서).
     sentences: pipeline.sentence_infos 모양. 훅은 소개 카드가 맡으니 뺀다.
     반환 {"picks": [{"sentence", "panels": [k..]}], "faces": {k: bool}, "ids": {k: bool}} — 범위 밖·중복 제거."""
     if read is None:
-        from recap_shorts.llm.gemini_api import read_images
+        from recap_shorts.llm.codex import read_images
 
         def read(images, instruction):
             return read_images(images, instruction, json=False)

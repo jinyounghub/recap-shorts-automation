@@ -23,18 +23,14 @@ def narration_roles(script: dict) -> tuple[list[str], list[str]]:
 
 
 def make_voice(script: dict, out_dir: str | Path, sid: int | None = None, check_asr: bool = True,
-               fit: bool = True, engine: str = "supertonic", instruct: str | None = None,
+               fit: bool = True, engine: str = "qwen", instruct: str | None = None,
                seed: int | None = None) -> dict:
-    out = Path(out_dir)
+    out = Path(out_dir).expanduser().resolve()
     texts, roles = narration_roles(script)
     engine_meta: dict = {}
     if engine == "qwen":
         from . import qwen
-        r = qwen.synth_sentences(texts, out / "sentences", instruct=instruct, seed=seed)
-        raw, engine_meta = r["items"], r["meta"]
-    elif engine == "gemini":
-        from . import gemini
-        r = gemini.synth_sentences(texts, out / "sentences", style=instruct)
+        r = qwen.synth_sentences(texts, out / "sentences", instruct=instruct, seed=seed, check=check_asr)
         raw, engine_meta = r["items"], r["meta"]
     elif engine == "supertonic":
         raw = tts.synth_sentences(texts, out / "sentences", sid=sid)
@@ -42,7 +38,7 @@ def make_voice(script: dict, out_dir: str | Path, sid: int | None = None, check_
         raise ValueError(f"알 수 없는 엔진: {engine}")
     warnings: list[str] = []
     clipped = []
-    if engine in ("gemini", "qwen"):          # 한 번에 합성한 녹음을 자른 조각: 경계가 낱말 속에 들어가면 말끝이 잘린다
+    if engine == "qwen":          # 한 번에 합성한 녹음을 자른 조각: 경계가 낱말 속에 들어가면 말끝이 잘린다
         for i, it in enumerate(raw):
             d = tts.end_level_db(it["wav"])
             if d > tts.END_CLIP_DB:
@@ -52,15 +48,15 @@ def make_voice(script: dict, out_dir: str | Path, sid: int | None = None, check_
     items = raw
     if fit:
         r = tts.fit_rate(raw, out / "sentences_fit")
-        items, factor, warnings = r["items"], r["factor"], r["warnings"]
+        items, factor = r["items"], r["factor"]
+        warnings.extend(r["warnings"])
     extra = {"engine": engine, "tempo_factor": round(factor, 4),
-             "rate_before_fit": round(before, 3), "warnings": warnings, "flags": [], "clipped_ends": clipped}
+             "rate_before_fit": round(before, 3), "warnings": warnings, "flags": [], "clipped_ends": clipped,
+             "raw_audio": [str(Path(it["wav"]).resolve().relative_to(out)) for it in raw]}
     if engine == "qwen":
         extra.update({k: engine_meta[k] for k in ("instruct", "seed", "tries", "retries", "model", "attempts")})
         if not engine_meta["min_match_ok"]:
             warnings.append("Qwen 자르기/발음 확인이 재시도 후에도 일치율 기준에 못 미침 (attempts 참고)")
-    elif engine == "gemini":
-        extra.update(engine_meta)
     else:
         extra["sid"] = tts.default_sid() if sid is None else sid
     timings = tts.assemble(items, out, roles=roles, extra=extra)
@@ -68,7 +64,8 @@ def make_voice(script: dict, out_dir: str | Path, sid: int | None = None, check_
         from . import asr
         if not asr.available():
             # 받아쓰기 모델이 없는 PC(새로 받은 저장소): 발음 확인만 건너뛰고 영상은 그대로 만든다
-            warnings.append("받아쓰기 모델이 없어 발음 확인을 건너뛰었습니다 — .venv\\Scripts\\python scripts\\setup_models.py 로 받으세요")
+            warnings.append("받아쓰기 모델이 없어 발음 확인을 건너뛰었습니다 — 기존 SenseVoice 모델은 "
+                            "RECAP_SENSEVOICE_DIR 로 연결하세요. 모델을 자동으로 받지 않습니다.")
             timings["asr_mean_match"] = None
             (out / "timings.json").write_text(json.dumps(timings, ensure_ascii=False, indent=2), encoding="utf-8")
             return timings

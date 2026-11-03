@@ -26,7 +26,7 @@ def main(argv=None) -> None:
     ap.add_argument("--memes", action=argparse.BooleanOptionalAction, default=None, help="짤 켜기/끄기 (기본: 설정 따름)")
     ap.add_argument("--sfx", action=argparse.BooleanOptionalAction, default=None, help="효과음 켜기/끄기 (기본: 설정 따름)")
     ap.add_argument("--config", default=None, help="설정 파일(기본 config/fx.json)")
-    ap.add_argument("--no-llm", action="store_true", help="분위기 라벨을 규칙으로만 (Gemini 호출 없음)")
+    ap.add_argument("--no-llm", action="store_true", help="분위기 라벨을 규칙으로만 (Codex 호출 없음)")
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--out", default="timeline_fx.mp4", help="out/ 아래 파일 이름")
     a = ap.parse_args(argv)

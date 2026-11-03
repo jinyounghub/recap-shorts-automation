@@ -1,4 +1,4 @@
-"""AI 이미지 품질 검사: 한 영상의 AI 이미지를 한 번에 Gemini 3.8 Flash 비전에 보여 주고 다시 만들 것을 고른다.
+"""AI 이미지 품질 검사: 한 영상의 AI 이미지를 한 번에 Codex 비전에 보여 주고 다시 만들 것을 고른다.
 
 0~2점 매기기는 모든 장에 1점을 주는 식으로 뭉개져서, 눈에 보이는 결함을 예/아니오로 묻고
 가장 나쁜 장을 순서대로 고르게 한다. 요청 1번(이미지 n장 + 지시문). 실패하면 빈 결과를 돌려주고 파이프라인은 그대로 간다.
@@ -39,7 +39,7 @@ def review(images: list[str | Path], hints: list[str], read_fn=None) -> dict:
     if not images:
         return empty
     if read_fn is None:
-        from recap_shorts.llm.gemini_api import VISION_MODEL, read_images
+        from recap_shorts.llm.codex import VISION_MODEL, read_images
 
         def read_fn(imgs, instr):
             return read_images(imgs, instr, VISION_MODEL, json=True)

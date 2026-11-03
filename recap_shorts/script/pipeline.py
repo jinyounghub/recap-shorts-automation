@@ -1,7 +1,7 @@
 """topic.json -> LLM 초안 -> 가드 -> (다듬기 -> 가드) -> script_draft.json / script.json / script_check.json.
 
-LLM 은 인자 llm 으로 바꿔 끼운다(없으면 recap_shorts.llm.make_script_llm: 환경변수 RECAP_SCRIPT_LLM=gemini_api|agy,
-기본 gemini_api / gemini-4-argon). 다듬기(refine=True)는 초안 가드 뒤 같은 LLM 에 두 번째 호출을 하고,
+LLM 은 인자 llm 으로 바꿔 끼운다(없으면 recap_shorts.llm.make_script_llm: 기본 Codex CLI,
+현재 ChatGPT OAuth 로그인과 Codex 모델 설정 사용). 다듬기(refine=True)는 초안 가드 뒤 같은 LLM 에 두 번째 호출을 하고,
 결과가 초안보다 나빠지면(문장 수 불일치, 가드 삭제 증가, 호출 실패) 초안을 그대로 최종으로 쓴다.
 """
 from __future__ import annotations

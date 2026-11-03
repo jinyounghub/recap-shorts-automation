@@ -1,5 +1,0 @@
-# -*- coding: utf-8 -*-
-# 렌더 모듈(recap_shorts/render) — 저장소 .venv 에 설치된 판. ffmpeg 9.0.2 는 PATH 에 있어야 함.
-pillow==12.3.0
-numpy==2.2.6
-pytest==9.1.1

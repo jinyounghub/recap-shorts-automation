@@ -1,126 +1,13 @@
 import json
 
 import pytest
-import requests
 from PIL import Image
 
-from recap_shorts import settings
 from recap_shorts.images import arrange, captures, provider
-from recap_shorts.llm import gemini_api, make_script_llm
 from recap_shorts.script.pipeline import generate_script
 from recap_shorts.script.refine import merge_refined
 from tests.pipeline.fakes import DRAFT, FakeLLM, png, READ_TEXT
 
-
-class Resp:
-    def __init__(self, code=200, body=None, content=b"", text=""):
-        self.status_code, self._body, self.content, self.text = code, body or {}, content, text or json.dumps(body or {})
-
-    def json(self):
-        return self._body
-
-
-def gem_ok(text):
-    return Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]})
-
-
-@pytest.fixture(autouse=True)
-def _key(monkeypatch):
-    monkeypatch.setattr(gemini_api, "_key", lambda: "TESTKEY")
-    real = gemini_api._post
-    monkeypatch.setattr(gemini_api, "_post", lambda model, body, timeout=300.0, sleep=lambda s: None: real(model, body, timeout, sleep))
-
-
-def test_generate_text_json_and_headers(monkeypatch):
-    seen = {}
-
-    def post(url, headers=None, json=None, timeout=None):
-        seen.update(url=url, headers=headers, body=json)
-        return gem_ok('앞말 {"a": 1} 뒷말')
-    monkeypatch.setattr(requests, "post", post)
-    assert gemini_api.generate_text("프롬프트") == {"a": 1}
-    assert seen["url"].endswith("/models/gemini-4-argon:generateContent")
-    assert seen["headers"]["x-goog-api-key"] == "TESTKEY"
-    assert seen["body"]["generationConfig"]["responseMimeType"] == "application/json"
-    monkeypatch.setattr(requests, "post", lambda *a, **k: gem_ok("그냥 글"))
-    assert gemini_api.generate_text("p", json=False) == "그냥 글"
-
-
-def test_retry_429_then_ok_and_gives_up(monkeypatch):
-    seq = [Resp(429, {"error": {"message": "slow"}}), Resp(503, {}), gem_ok("{}")]
-    monkeypatch.setattr(requests, "post", lambda *a, **k: seq.pop(0))
-    assert gemini_api.generate_text("p") == {} and not seq
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp(500, {"error": {"message": "x"}}))
-    with pytest.raises(gemini_api.GeminiApiError, match="HTTP 500"):
-        gemini_api.generate_text("p")
-    calls = []
-    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or Resp(400, {"error": {"message": "bad"}}))
-    with pytest.raises(gemini_api.GeminiApiError):
-        gemini_api.generate_text("p")
-    assert len(calls) == 1                                     # 400 은 다시 시도하지 않음
-
-
-def test_error_message_has_no_key(monkeypatch):
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp(403, {"error": {"message": "denied"}}))
-    with pytest.raises(gemini_api.GeminiApiError) as e:
-        gemini_api.generate_text("p")
-    assert "TESTKEY" not in str(e.value)
-
-
-def test_read_images_inline_data(monkeypatch, tmp_path):
-    seen = {}
-    monkeypatch.setattr(requests, "post", lambda url, headers=None, json=None, timeout=None: seen.update(b=json) or gem_ok('{"text": "글"}'))
-    p = tmp_path / "a.png"
-    png(p)
-    out = gemini_api.read_images([p], "읽어", json=True)
-    assert out == {"text": "글"}
-    parts = seen["b"]["contents"][0]["parts"]
-    assert parts[0]["inline_data"]["mime_type"] == "image/png" and parts[-1] == {"text": "읽어"}
-
-
-def test_read_images_asks_again_when_json_is_broken(monkeypatch, tmp_path):
-    """긴 글을 옮겨 적은 답의 JSON 이 깨지면(따옴표를 안 감싼 경우 등) 한 번 더 묻고, 두 번째도 깨지면 오류."""
-    answers = iter(['{"kind": "방송", "text": "그가 "차 못 빼" 했다"}', '{"kind": "방송", "text": "그가 \\"차 못 빼\\" 했다"}'])
-    calls = []
-    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or gem_ok(next(answers)))
-    p = tmp_path / "a.png"
-    png(p)
-    assert gemini_api.read_images([p], "읽어", json=True) == {"kind": "방송", "text": '그가 "차 못 빼" 했다'}
-    assert len(calls) == 2
-    calls.clear()
-    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or gem_ok('{"text": "그가 "차" 했다"}'))
-    with pytest.raises(ValueError):
-        gemini_api.read_images([p], "읽어", json=True)
-    assert len(calls) == 1 + gemini_api.JSON_RETRIES
-    calls.clear()
-    assert gemini_api.read_images([p], "읽어") == '{"text": "그가 "차" 했다"}' and len(calls) == 1   # 글 답은 다시 묻지 않음
-
-
-def test_read_images_thinking_level(monkeypatch, tmp_path):
-    seen = []
-    monkeypatch.setattr(requests, "post", lambda url, headers=None, json=None, timeout=None: seen.append(json) or gem_ok('{"a": 1}'))
-    p = tmp_path / "a.png"
-    png(p)
-    gemini_api.read_images([p], "읽어", json=True, thinking="low")
-    gemini_api.read_images([p], "읽어", json=True)
-    assert seen[0]["generationConfig"] == {"responseMimeType": "application/json", "thinkingConfig": {"thinkingLevel": "low"}}
-    assert seen[1]["generationConfig"] == {"responseMimeType": "application/json"}
-
-
-def test_thought_parts_are_ignored(monkeypatch):
-    body = {"candidates": [{"content": {"parts": [{"text": "생각", "thought": True}, {"text": "답"}]}}]}
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp(200, body))
-    assert gemini_api.generate_text("p", json=False) == "답"
-
-
-def test_llm_adapter_and_factory(monkeypatch):
-    monkeypatch.setattr(requests, "post", lambda *a, **k: gem_ok('{"x": 2}'))
-    llm = make_script_llm("gemini_api")
-    assert llm.model == "gemini-4-argon" and llm.complete_json("p") == {"x": 2} and llm.calls[0]["ok"]
-    monkeypatch.setenv("RECAP_SCRIPT_LLM", "gemini_api")
-    assert make_script_llm().name == "gemini_api"
-    with pytest.raises(ValueError):
-        make_script_llm("nope")
 
 
 def test_generate_script_saves_draft_and_final(tmp_path):
@@ -146,42 +33,6 @@ def test_merge_refined_keeps_facts():
     ref["sentences"].pop()
     assert merge_refined(draft, ref)[0] is None
 
-
-def test_provider_generate(monkeypatch, tmp_path):
-    from tests.pipeline.fakes import png as mk
-    mk(tmp_path / "x.png")
-    data = (tmp_path / "x.png").read_bytes()
-    seen = {}
-
-    def post(url, json=None, timeout=None):
-        seen.update(url=url, body=json)
-        return Resp(200, content=data)
-    monkeypatch.setattr(requests, "post", post)
-    settings.save({}, "local")              # 기본은 Gemini 이미지 — 로컬 서버 경로를 보려면 골라야 한다
-    r = provider.generate("p", tmp_path / "o" / "a.png")
-    assert r["ok"] and (tmp_path / "o" / "a.png").read_bytes() == data
-    assert seen["url"] == "http://127.0.0.1:8791/api/image" and seen["body"] == {"prompt": "p", "aspect": "landscape", "format": "png"}
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp(500, text="err"))
-    r = provider.generate("p", tmp_path / "b.png")
-    assert not r["ok"] and "500" in r["error"] and not (tmp_path / "b.png").exists()
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp(200, content=b"not png"))
-    assert "PNG" in provider.generate("p", tmp_path / "c.png")["error"]
-
-    def boom(*a, **k):
-        raise requests.ConnectionError()
-    monkeypatch.setattr(requests, "post", boom)
-    assert "연결 실패" in provider.generate("p", tmp_path / "d.png")["error"]
-
-
-def test_provider_available(monkeypatch):
-    settings.save({}, "local")
-    monkeypatch.setattr(requests, "get", lambda *a, **k: Resp(200))
-    assert provider.available()
-
-    def boom(*a, **k):
-        raise requests.ConnectionError()
-    monkeypatch.setattr(requests, "get", boom)
-    assert not provider.available()
 
 
 def test_build_prompt_and_hints():

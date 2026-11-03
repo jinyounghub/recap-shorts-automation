@@ -2,14 +2,26 @@
   "_comment": "채널 대주제. 정해 두면 주제 찾기(실시간 베스트)가 이 주제에 맞는 글부터 보여 준다. main_topic: null(없음) | presets 의 id | \"custom\"(아래 custom 글). 화면에서 바꾸면 이 파일이 아니라 config/channel.local.json(gitignore)에 저장되고 그쪽이 우선한다. desc 는 분류에 쓰는 한 줄 설명이라 직접 고쳐도 된다(고치면 이전 점수는 다시 매긴다).",
   "main_topic": "daily_drama",
   "presets": [
-    {"id": "daily_drama", "label": "일상 논란·썰", "desc": "일상에서 벌어진 갈등·논란·황당한 썰(배달·연애·직장·가족·이웃·AI 와 얽힌 일 등). 읽는 사람끼리 누가 잘못했는지 편이 갈리는 이야기"},
-    {"id": "money_life", "label": "돈·생활 경제", "desc": "돈과 생활 경제 — 병원비·전세·월세·세금·물가·월급·주식·부동산처럼 내 지갑과 바로 이어지는 사건과 소식"},
-    {"id": "curious_facts", "label": "알고 보면 신기한 상식", "desc": "알고 보면 신기한 상식 — 이름의 유래, 생활 속 '왜 그럴까' 궁금증, 과학·역사·문화 잡학"}
+    {
+      "id": "daily_drama",
+      "label": "일상 논란·썰",
+      "desc": "일상에서 벌어진 갈등·논란·황당한 썰(배달·연애·직장·가족·이웃·AI 와 얽힌 일 등). 읽는 사람끼리 누가 잘못했는지 편이 갈리는 이야기"
+    },
+    {
+      "id": "money_life",
+      "label": "돈·생활 경제",
+      "desc": "돈과 생활 경제 — 병원비·전세·월세·세금·물가·월급·주식·부동산처럼 내 지갑과 바로 이어지는 사건과 소식"
+    },
+    {
+      "id": "curious_facts",
+      "label": "알고 보면 신기한 상식",
+      "desc": "알고 보면 신기한 상식 — 이름의 유래, 생활 속 '왜 그럴까' 궁금증, 과학·역사·문화 잡학"
+    }
   ],
   "custom": null,
   "fit": {
-    "_comment": "점수 매기기 설정. batch: 한 번에 묻는 제목 수, model: 점수 매기는 Gemini 모델.",
+    "_comment": "점수 매기기 설정. batch: 한 번에 묻는 제목 수, model: 점수 매기는 Codex 모델(비우면 현재 설정).",
     "batch": 30,
-    "model": "gemini-3.8-flash"
+    "model": null
   }
 }

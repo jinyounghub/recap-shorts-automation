@@ -1,6 +1,6 @@
-"""앱 안 설정 파일(config/settings.local.json): API 키, AI 그림 엔진, 쓸 모델(대본·목소리·이미지), 목소리 엔진, 효과음·짤 폴더.
+"""Local configuration for Codex, existing TTS, sound effects and image assets.
 
-- 키·모델 읽기 순서: 환경변수(앞뒤 공백 뺀 값이 비어 있지 않으면) → 설정 파일 → 없음("") 또는 기본 모델.
+- 모델 읽기 순서: 환경변수(앞뒤 공백 뺀 값이 비어 있지 않으면) → 설정 파일 → 없음("") 또는 기본 모델.
 - 파일 쓰기는 임시 파일 + os.replace, 프로세스 안 threading.Lock(반쯤 쓴 파일이 남지 않게).
 - 키 값은 어디에도 출력·로그·응답에 넣지 않는다(예외 메시지 포함).
 - 경로는 부를 때마다 본다: 환경변수 RECAP_SETTINGS_FILE → config/settings.local.json.
@@ -17,62 +17,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = REPO_ROOT / "config" / "settings.local.json"
 
-# 화면에 나오는 순서 그대로(계약서 2절)
-KEYS = [
-    {"name": "gemini_api_key", "env": "RECAP_GEMINI_API_KEY", "label": "Gemini API 키", "group": "gemini",
-     "required": True},
-    {"name": "cf_account_id", "env": "RECAP_CF_ACCOUNT_ID", "label": "Cloudflare 계정 ID", "group": "cloudflare",
-     "required": False},
-    {"name": "cf_api_token", "env": "RECAP_CF_API_TOKEN", "label": "Cloudflare API 토큰", "group": "cloudflare",
-     "required": False},
-]
-
-GROUPS = [
-    {"id": "gemini", "title": "Gemini",
-     "desc": "대본, 목소리, 첨부 그림 읽기, AI 그림(그림 만드는 곳이 Gemini 일 때). 이 키 하나만 있으면 영상을 만들 수 있습니다.",
-     "url": "https://aistudio.google.com/apikey"},
-    {"id": "cloudflare", "title": "Cloudflare (Clef)",
-     "desc": "실시간 베스트 주제 분류, AI 그림 글자 점검, 완성 영상 점검. 없으면 이 점검만 건너뜁니다.",
-     "url": "https://dash.cloudflare.com/profile/api-tokens"},
-]
-
-IMAGE_ENGINES = [
-    {"id": "local", "label": "로컬 이미지 서버 (사용 한도에 걸리면 Gemini 로 대신)"},
-    {"id": "gemini", "label": "Gemini 이미지 (유료, 장당 약 0.07달러)"},
-    {"id": "off", "label": "AI 그림 안 만듦 — 글 캡처·사진만"},
-]
+# This fork uses the existing Codex ChatGPT login. API keys are never read.
+IMAGE_ENGINES = [{"id": "codex", "label": "Codex 내장 imagegen"},
+                 {"id": "off", "label": "생성 이미지 사용 안 함"}]
 ENGINE_IDS = [e["id"] for e in IMAGE_ENGINES]
-# 고른 적이 없거나 모르는 값(예전의 "auto" 포함)이면 이것. 로컬 이미지 서버는 저장소에 없어서 Gemini 키만 있어도 그림이 나오게.
-DEFAULT_ENGINE = "gemini"
-
-# 쓸 모델(설정 화면 '쓸 모델'). 기본값은 각 모듈의 기본과 같다(llm/gemini_api.TEXT_MODEL, voice/gemini.DEFAULT_MODEL,
-# images/gemini_image — tests/test_settings.py 가 맞는지 본다). 환경변수가 있으면 그게 먼저이고 화면에서 못 바꾼다.
-MODEL_ROLES = [
-    {"role": "script", "label": "대본", "env": "RECAP_SCRIPT_MODEL", "default": "gemini-4-argon"},
-    {"role": "tts", "label": "목소리", "env": "RECAP_TTS_MODEL", "default": "gemini-3.8-flash-tts"},
-    {"role": "image", "label": "이미지", "env": "RECAP_GEMINI_IMAGE_MODEL", "default": "gemini-3.1-flash-image"},
-]
+DEFAULT_ENGINE = "codex"
+MODEL_ROLES = [{"role": "script", "label": "Codex 모델", "env": "RECAP_SCRIPT_MODEL", "default": ""}]
 ROLE_IDS = [r["role"] for r in MODEL_ROLES]
-MODEL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{1,79}$")
-VOICE_ENGINES = [
-    {"id": "gemini", "label": "Gemini 목소리"},
-    {"id": "supertonic", "label": "로컬 목소리 (Supertonic) — 이 컴퓨터에서 만듦, 무료"},
-]
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+VOICE_ENGINES = [{"id": "qwen", "label": "기존 로컬 Qwen TTS"},
+                 {"id": "supertonic", "label": "기존 로컬 Supertonic"}]
 VOICE_ENGINE_IDS = [e["id"] for e in VOICE_ENGINES]
 SUPERTONIC_SIDS = list(range(10))
-# Gemini 미리 만든 목소리 30개와 공식 설명(ai.google.dev/gemini-api/docs/speech-generation, 2026-09-30 확인).
-# 기본 Charon 은 voice/gemini.DEFAULT_VOICE 와 같다.
-GEMINI_VOICES = [
-    ("Charon", "정보 전달형"), ("Kore", "단단한"), ("Orus", "단단한"), ("Alnilam", "단단한"), ("Sadaltager", "지적인"),
-    ("Rasalgethi", "정보 전달형"), ("Iapetus", "또렷한"), ("Erinome", "또렷한"), ("Schedar", "고른"), ("Achird", "친근한"),
-    ("Sulafat", "따뜻한"), ("Vindemiatrix", "부드러운"), ("Achernar", "부드러운"), ("Algieba", "매끄러운"), ("Despina", "매끄러운"),
-    ("Callirrhoe", "여유로운"), ("Umbriel", "여유로운"), ("Zubenelgenubi", "캐주얼한"), ("Puck", "경쾌한"), ("Laomedeia", "경쾌한"),
-    ("Sadachbia", "활기찬"), ("Fenrir", "흥분한"), ("Zephyr", "밝은"), ("Autonoe", "밝은"), ("Leda", "젊은"), ("Aoede", "산뜻한"),
-    ("Enceladus", "숨소리 섞인"), ("Algenib", "거친"), ("Gacrux", "성숙한"), ("Pulcherrima", "적극적인"),
-]
-GEMINI_VOICE_IDS = [n for n, _ in GEMINI_VOICES]
-DEFAULT_GEMINI_VOICE = "Charon"
-VOICE_FIELDS = ("engine", "gemini_voice", "sid")
+VOICE_FIELDS = ("engine", "sid")
 # 효과음 폴더(설정 화면 '효과음'). 비어 있으면 config/fx.json 의 sfx.libraries(기본 꾸러미)를 쓴다.
 # fill_missing = 고른 폴더에 없는 종류는 기본 꾸러미에서 채움(기본 켬).
 SFX_FIELDS = ("dirs", "fill_missing")
@@ -95,66 +52,25 @@ def path() -> Path:
     return Path(os.environ.get("RECAP_SETTINGS_FILE") or DEFAULT_FILE)
 
 
-def _spec(name: str) -> dict:
-    for k in KEYS:
-        if k["name"] == name:
-            return k
-    raise KeyError(name)
-
-
-def _env_value(name: str) -> str:
-    return str(os.environ.get(_spec(name)["env"], "")).strip()
-
-
 def _load(p: Path | str | None = None) -> dict:
     """설정 파일 내용. 없거나 깨졌으면 빈 꼴. p 를 주면 그 파일(시험용)."""
     p = path() if p is None else Path(p)
-    empty = {"keys": {}, "image_engine": None, "models": {}, "voice": {}, "sfx": {}, "memes": {}}
+    empty = {"image_engine": None, "models": {}, "voice": {}, "sfx": {}, "memes": {}}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return empty
     if not isinstance(data, dict):
         return empty
-    keys, models, voice, sfx, memes = (data.get(k) for k in ("keys", "models", "voice", "sfx", "memes"))
-    return {"keys": keys if isinstance(keys, dict) else {}, "image_engine": data.get("image_engine"),
+    models, voice, sfx, memes = (data.get(k) for k in ("models", "voice", "sfx", "memes"))
+    return {"image_engine": data.get("image_engine"),
             "models": models if isinstance(models, dict) else {}, "voice": voice if isinstance(voice, dict) else {},
             "sfx": sfx if isinstance(sfx, dict) else {}, "memes": memes if isinstance(memes, dict) else {}}
 
 
-def file_keys(p: Path | str | None = None) -> dict[str, str]:
-    """설정 파일에 적힌 키만(환경변수 무시)."""
-    out = {}
-    for name, v in _load(p)["keys"].items():
-        if isinstance(v, str) and v.strip():
-            out[name] = v.strip()
-    return out
-
-
-def _file_value(name: str) -> str:
-    v = _load()["keys"].get(name)
-    return str(v).strip() if v not in (None, "") else ""
-
-
-def get_key(name: str) -> str:
-    """환경변수 → 설정 파일 → "". 이름이 목록에 없으면 KeyError."""
-    if name not in [k["name"] for k in KEYS]:
-        raise KeyError(name)
-    return _env_value(name) or _file_value(name)
-
-
-def key_source(name: str) -> str | None:
-    """"env" | "file" | None."""
-    if name not in [k["name"] for k in KEYS]:
-        raise KeyError(name)
-    if _env_value(name):
-        return "env"
-    return "file" if _file_value(name) else None
-
-
 def image_engine() -> str:
-    """설정 파일의 값(없거나 모르는 값이면 DEFAULT_ENGINE)."""
-    v = _load()["image_engine"]
+    """Only native Codex imagegen or no generated images; legacy engines migrate to Codex."""
+    v = os.environ.get("RECAP_IMAGE_ENGINE") or _load()["image_engine"]
     return v if v in ENGINE_IDS else DEFAULT_ENGINE
 
 
@@ -175,8 +91,11 @@ def _model_file(role: str) -> str:
 
 
 def model(role: str) -> str:
-    """script | tts | image 에 쓸 Gemini 모델: 환경변수 → 설정 파일 → 기본."""
-    return _model_env(role) or _model_file(role) or _role(role)["default"]
+    """Optional Codex model override; an empty value preserves the current Codex model."""
+    value = _model_env(role) or _model_file(role) or _role(role)["default"]
+    if value.lower().startswith("gemini"):
+        return ""
+    return value
 
 
 def model_source(role: str) -> str | None:
@@ -187,15 +106,9 @@ def model_source(role: str) -> str | None:
 
 
 def voice_engine() -> str:
-    """목소리 엔진: gemini | supertonic (설정 파일, 없거나 모르는 값이면 gemini)."""
-    v = _load()["voice"].get("engine")
-    return v if v in VOICE_ENGINE_IDS else "gemini"
-
-
-def gemini_voice() -> str:
-    """Gemini 목소리 이름(설정 파일, 없거나 모르는 이름이면 Charon)."""
-    v = _load()["voice"].get("gemini_voice")
-    return v if v in GEMINI_VOICE_IDS else DEFAULT_GEMINI_VOICE
+    """Use the existing local Qwen environment by default; never a cloud TTS fallback."""
+    value = os.environ.get("RECAP_TTS_ENGINE") or _load()["voice"].get("engine")
+    return value if value in VOICE_ENGINE_IDS else "qwen"
 
 
 def supertonic_sid() -> int:
@@ -410,9 +323,7 @@ def _check_voice(voice: dict | None) -> None:
         if voice["engine"] == "supertonic":
             from recap_shorts import modelfiles
             if not modelfiles.ok("supertonic"):
-                raise SettingsError("로컬 목소리 모델이 없습니다 — 아래 '모델 파일'에서 먼저 받으세요")
-    if "gemini_voice" in voice and voice["gemini_voice"] not in GEMINI_VOICE_IDS:
-        raise SettingsError("모르는 Gemini 목소리입니다")
+                raise SettingsError("기존 로컬 Supertonic 모델 경로를 RECAP_SUPERTONIC_DIR 로 연결하세요")
     if "sid" in voice:
         if not isinstance(voice["sid"], int) or isinstance(voice["sid"], bool) or voice["sid"] not in SUPERTONIC_SIDS:
             raise SettingsError("목소리 번호는 0~9 입니다")
@@ -420,48 +331,23 @@ def _check_voice(voice: dict | None) -> None:
             raise SettingsError("환경변수 RECAP_TTS_SID 로 정해져 있어 여기서 바꿀 수 없습니다", status=409)
 
 
-def _valid_value(v: object) -> bool:
-    """앞뒤 공백 뺀 뒤 1~512자, 공백·제어문자 없음, 출력 가능한 ASCII 만(0x21~0x7E)."""
-    if not isinstance(v, str):
-        return False
-    s = v.strip()
-    return 1 <= len(s) <= 512 and all("!" <= ch <= "~" for ch in s)
-
-
 def save(keys: dict | None = None, image_engine: str | None = None, models: dict | None = None,
          voice: dict | None = None, sfx: dict | None = None, memes: dict | None = None) -> dict:
     """keys·models 에 없는 이름은 그대로 두고, "" 또는 null 은 설정 파일에서 지운다(모델은 기본으로 돌아감).
-    voice = {"engine": gemini|supertonic, "sid": 0~9} 중 준 것만 바꾼다.
+    voice = {"engine": qwen|supertonic, "sid": 0~9} 중 준 것만 바꾼다.
     sfx = {"dirs": [폴더…] (빈 목록·null = 기본 꾸러미로), "fill_missing": bool} 중 준 것만 바꾼다.
     memes = {"dirs": [폴더…] (빈 목록·null = 기본 짤로)}.
     환경변수가 정하고 있는 값을 바꾸려 하면 SettingsError(409), 값·이름이 틀리면 SettingsError(400)."""
-    if keys is not None and not isinstance(keys, dict):
-        raise SettingsError("keys 는 객체여야 합니다")
+    if keys:
+        raise SettingsError("API 키 설정은 지원하지 않습니다. 기존 Codex ChatGPT 로그인을 사용하세요")
     if image_engine is not None and image_engine not in ENGINE_IDS:
         raise SettingsError("모르는 image_engine 입니다")
     _check_models(models)
     _check_voice(voice)
     sfx_dirs_new = _check_sfx(sfx)
     meme_dirs_new = _check_memes(memes)
-    known = {k["name"] for k in KEYS}
-    for name in keys or {}:
-        if name not in known:
-            raise SettingsError(f"모르는 키 이름입니다: {name}")
-    for name, v in (keys or {}).items():
-        if v not in (None, "") and not _valid_value(v):
-            raise SettingsError("키에 쓸 수 없는 글자가 있습니다")
-    for name, v in (keys or {}).items():
-        if v not in (None, "") and _env_value(name):
-            raise SettingsError(f"환경변수 {_spec(name)['env']} 로 정해져 있어 여기서 바꿀 수 없습니다", status=409)
-
     with _LOCK:
         data = _load()
-        cur = dict(data["keys"])
-        for name, v in (keys or {}).items():
-            if v in (None, ""):
-                cur.pop(name, None)
-            else:
-                cur[name] = v.strip()
         if image_engine is not None:
             data["image_engine"] = image_engine
         mods = {r: v for r, v in data["models"].items() if r in ROLE_IDS}
@@ -486,7 +372,7 @@ def save(keys: dict | None = None, image_engine: str | None = None, models: dict
                 mm["dirs"] = meme_dirs_new
             else:
                 mm.pop("dirs", None)
-        out = {"keys": cur}
+        out = {}
         if data["image_engine"] is not None:
             out["image_engine"] = data["image_engine"]
         if mods:
@@ -514,43 +400,12 @@ def save(keys: dict | None = None, image_engine: str | None = None, models: dict
     return public_view()
 
 
-def _masked(v: str) -> str | None:
-    if not v:
-        return None
-    return ("••••" + v[-4:]) if len(v) >= 16 else "••••"
-
-
-def _display_path(p: Path) -> str:
-    try:
-        return p.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
-    except ValueError:
-        return p.name
-
-
 def public_view() -> dict:
-    """GET /api/settings 응답 꼴. 키 값은 들어가지 않는다."""
-    from recap_shorts import modelfiles
-    from recap_shorts.images import provider
-
-    keys = []
-    for k in KEYS:
-        v = get_key(k["name"])
-        keys.append({"name": k["name"], "label": k["label"], "group": k["group"], "required": k["required"],
-                     "env": k["env"], "set": bool(v), "source": key_source(k["name"]), "masked": _masked(v)})
-    return {"file": _display_path(path()),
-            "ready": bool(get_key("gemini_api_key")),
-            "keys": keys,
-            "groups": GROUPS,
-            "image_engine": image_engine(),
-            "image_engines": IMAGE_ENGINES,
-            "image_server": {"url": provider.local_url(), "up": provider.local_server_up()},
-            "model_roles": [{"role": r["role"], "label": r["label"], "env": r["env"], "default": r["default"],
-                             "value": model(r["role"]), "source": model_source(r["role"])} for r in MODEL_ROLES],
+    """Non-secret local configuration for CLI and library helpers."""
+    return {"file": str(path()), "auth": "codex_chatgpt", "keys": [], "groups": [],
+            "image_engine": image_engine(), "image_engines": IMAGE_ENGINES,
+            "model_roles": [{**r, "value": model(r["role"]), "source": model_source(r["role"])}
+                            for r in MODEL_ROLES],
             "voice": {"engine": voice_engine(), "engines": VOICE_ENGINES,
-                      "gemini_voice": gemini_voice(), "gemini_voices": [{"id": n, "label": f"{n} — {d}"} for n, d in GEMINI_VOICES],
-                      "sid": supertonic_sid(),
-                      "sid_env": bool(str(os.environ.get("RECAP_TTS_SID", "")).strip()), "sids": SUPERTONIC_SIDS},
-            "sfx": sfx_view(),
-            "memes": memes_view(),
-            "models": modelfiles.status(),
-            "setup_cmd": modelfiles.setup_cmd()}
+                      "sid": supertonic_sid(), "sids": SUPERTONIC_SIDS},
+            "sfx": sfx_view(), "memes": memes_view()}

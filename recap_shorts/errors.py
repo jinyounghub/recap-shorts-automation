@@ -1,11 +1,7 @@
-"""오류를 화면에 보여 줄 한국어로 바꾼다.
+"""Classify local/Codex failures into concise Korean CLI and job-state messages.
 
-화면(작업 화면·제작 기록·주제 목록·설정)에는 예외 클래스 이름, Traceback, 이 PC 의 파일 경로를 내보내지 않는다.
-Traceback 은 작업 폴더의 _logs/errors.log 에만 남긴다(pipeline).
-
-- Gemini 호출 계층(llm/gemini_api, voice/gemini, images/gemini_image)은 예외에 kind·http 를 붙여 준다.
-- 붙지 않은 예외(시험용 가짜 오류, 예전 코드)는 메시지 모양으로 알아본다.
-- 종류: no_key(키 없음) | bad_key(키가 맞지 않음) | quota(사용 한도) | net(연결 실패) | http(그 밖의 HTTP 오류) | other
+Raw subprocess output is not included. Full local stack traces stay in job logs.
+Typed Codex authentication and quota failures stop repeated downstream calls.
 """
 from __future__ import annotations
 
@@ -108,7 +104,7 @@ def reason(e) -> str:
     k, code = kind_of(e), http_of(e)
     text = _text_of(e)
     out = {"no_key": "키 없음", "bad_key": "키가 맞지 않음", "quota": "사용 한도",
-           "net": ("Gemini 연결 실패" if "gemini" in text.lower() else "연결 실패"),
+           "net": ("Codex 연결 실패" if "codex" in text.lower() else "연결 실패"),
            "http": "요청을 처리하지 못함"}.get(k)
     if out is None:
         out = _clean(text, "점수를 매기지 못했습니다")[:80] or "점수를 매기지 못했습니다"
@@ -125,15 +121,15 @@ def screen_text(e, fallback: str = DEFAULT_FALLBACK, *, kind: str | None = None,
     code = http if isinstance(http, int) else http_of(e)
     text = _text_of(e)
     if k == NO_KEY:
-        return "Gemini API 키가 없습니다 — 화면 오른쪽 위 '설정'에서 넣으세요"
+        return "Codex ChatGPT 로그인이 필요합니다 — codex login status 로 확인하세요"
     if k == BAD_KEY:
-        return "Gemini API 키가 맞지 않습니다 — 오른쪽 위 '설정'에서 키를 확인하세요"
+        return "Codex ChatGPT 인증을 확인하세요 — 필요하면 codex login 으로 다시 로그인하세요"
     if k == QUOTA:
         if "하루 한도" in text:                       # TTS 하루 한도는 초기화 시각까지 알려 준다
             return text.split("HTTP", 1)[0].strip().rstrip(".")
-        return "Gemini 사용 한도에 걸렸습니다 — 잠시 뒤에 다시 해 보세요"
+        return "Codex 사용 한도에 걸렸습니다 — 잠시 뒤에 다시 해 보세요"
     if k == NET:
-        who = "Gemini " if "gemini" in text.lower() else ""
+        who = "Codex " if "codex" in text.lower() else ""
         return f"{who}연결 실패 — 인터넷 연결을 확인하세요"
     if k == HTTP:
         return f"요청을 처리하지 못했습니다(HTTP {code})" if code else "요청을 처리하지 못했습니다"
